@@ -48,8 +48,7 @@ HEUREKA = "https://obchody.heureka.cz"
 CACHE_DIR = ".cache_heureka"
 
 HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
+    "User-Agent": "Mozilla/5.0 (compatible; heureka-intl-check/1.0)",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.6",
 }
@@ -286,6 +285,8 @@ def cmd_shops(args):
     log(f"ze sitemap: {len(shops)} obchodů")
 
     # 2) fallback – výpisy kategorií (jen když sitemap nic nedala)
+    if args.kategorie:
+        shops = {}                      # při výběru kategorií sitemap (všechny obchody) nepoužijeme
     if len(shops) < 100:
         log("sitemap obchody neobsahuje, procházím výpis kategorií (pomaleji)")
         home = f.get(HEUREKA + "/") or ""
@@ -293,6 +294,10 @@ def cmd_shops(args):
         cats = sorted({urljoin(HEUREKA, a["href"]).split("?")[0] for a in soup.find_all("a", href=True)
                        if urljoin(HEUREKA, a["href"]).startswith(HEUREKA + "/")
                        and not SHOP_URL_RE.match(urljoin(HEUREKA, a["href"]).split("?")[0])})
+        if args.kategorie:
+            want = [k.strip().lower() for k in args.kategorie.split(",") if k.strip()]
+            cats = [c for c in cats if any(k in c.lower() for k in want)]
+            log(f"vybrané kategorie: {len(cats)} ({', '.join(want)})")
         for cat in cats:
             url, pages = cat, 0
             while url and pages < args.max_pages:
@@ -345,8 +350,11 @@ ICO_RE = re.compile(r"\bI[ČC]O?\s*[:.]?\s*(\d{2}\s?\d{3}\s?\d{3}|\d{8})\b")
 LEGAL_FORMS = (r"s\.\s?r\.\s?o\.|spol\.\s?s\s?r\.\s?o\.|a\.\s?s\.|k\.\s?s\.|v\.\s?o\.\s?s\.|"
                r"sp\.\s?z\s?o\.\s?o\.|S\.A\.|Kft\.?|Zrt\.?|Bt\.|GmbH|AG|S\.R\.L\.|SRL|s\.r\.l\.|"
                r"d\.o\.o\.|EOOD|OOD|Ltd\.?|Limited|B\.V\.|BV|S\.L\.|SAS|SARL|SpA|S\.p\.A\.|UAB|SIA|OÜ")
+# 1–4 slova začínající písmenem, hned za nimi právní forma (např. "Psí svět s.r.o.")
 COMPANY_RE = re.compile(
-    r"([A-ZÁ-Ž0-9][\w&\-\.\' ]{1,60}?[ ,]+(?:" + LEGAL_FORMS + r"))(?=[\s,;)<]|$)", re.U)
+    r"((?:[A-ZÁ-Ža-zá-ž][\w&\-\.\']*\s+){1,4}?(?:" + LEGAL_FORMS + r"))(?=[\s,;)<]|$)", re.U)
+COMPANY_NOISE = re.compile(r"\b(sídlo|copyright|práva|rights|provozovatel|prevádzkovateľ|společnost|"
+                           r"spoločnosť|firma|company|sprzedawca|üzemeltető|betreiber|operator)\b", re.I)
 # Firmy, které na webech vystupují, ale nejsou provozovatelem (platformy, platby, dopravci…)
 NOT_OPERATOR = re.compile(
     r"shoptet|upgates|eshop-rychle|webnode|wordpress|woocommerce|shopify|heureka|seznam|google|"
@@ -402,7 +410,12 @@ def operator_ids(html):
             ids["ico"].add(v[2:])
     for m in COMPANY_RE.findall(txt):
         m = m.strip(" ,")
-        if NOT_OPERATOR.search(m) or len(m) > 70:
+        # odřízne úvodní slova typu "Provozovatel:" / "Sídlo společnosti"
+        words = m.split()
+        while words and COMPANY_NOISE.search(words[0].strip(":")):
+            words.pop(0)
+        m = " ".join(words)
+        if not m or NOT_OPERATOR.search(m) or len(m) > 70 or COMPANY_NOISE.search(m):
             continue
         n = norm_company(m)
         if len(n) >= 3:
@@ -670,6 +683,8 @@ def main():
     s.add_argument("--max-wait", type=float, default=9.0, help="max. pauza mezi požadavky (s)")
     s.add_argument("--max-requests", type=int, default=1500, help="limit požadavků na jedno spuštění")
     s.add_argument("--max-pages", type=int, default=400, help="max. stránek na kategorii (fallback)")
+    s.add_argument("--kategorie", default="",
+                   help="jen vybrané kategorie – části URL oddělené čárkou, např. elektronika,sport,zvirata")
     s.set_defaults(func=cmd_shops)
 
     i = sub.add_parser("intl", help="dohledání zahraničních domén")
