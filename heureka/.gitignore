@@ -1,3 +1,4 @@
 .cache_heureka/
 *.jsonl
 __pycache__/
+data/
