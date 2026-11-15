@@ -162,8 +162,37 @@ class PoliteFetcher:
         self.robots = urllib.robotparser.RobotFileParser()
         self.robots_text = ""
 
+    def _fetch_robots(self, url):
+        """Stáhne robots.txt; redirect na jinou cestu (např. /robots.txt/) ani HTML stránku nebere."""
+        for _ in range(3):
+            try:
+                r = self.s.get(url, timeout=25, allow_redirects=False)
+            except requests.RequestException as e:
+                log("chyba sítě:", url, e)
+                return None
+            if r.status_code in (301, 302, 303, 307, 308):
+                nxt = urljoin(url, r.headers.get("location", ""))
+                if urlparse(nxt).path != "/robots.txt":   # přesměrování mimo robots.txt = soubor neexistuje
+                    return None
+                url = nxt
+                continue
+            ctype = r.headers.get("content-type", "").lower()
+            if r.status_code != 200 or "html" in ctype or r.text.lstrip()[:1] == "<":
+                return None
+            return r.text
+        return None
+
     def load_robots(self):
-        txt = self.get(HEUREKA + "/robots.txt", check_robots=False) or ""
+        # obchody.heureka.cz vlastní robots.txt nemá (/robots.txt -> /robots.txt/ -> 404 HTML),
+        # proto záložně pravidla hlavní domény www.heureka.cz
+        txt = ""
+        for url in (HEUREKA + "/robots.txt", "https://www.heureka.cz/robots.txt"):
+            txt = self._fetch_robots(url) or ""
+            if txt:
+                log(f"robots.txt: {url}")
+                break
+        else:
+            log("robots.txt nenalezen – pokračuji s výchozími pauzami")
         self.robots_text = txt
         self.robots.parse(txt.splitlines())
         cd = self.robots.crawl_delay(HEADERS["User-Agent"]) or self.robots.crawl_delay("*")
@@ -266,7 +295,7 @@ def domain_from_detail(html):
 
 def cmd_shops(args):
     f = PoliteFetcher(args.min_wait, args.max_wait, args.max_requests)
-    sitemaps = f.load_robots() or [HEUREKA + "/sitemap.xml"]
+    sitemaps = list(dict.fromkeys([HEUREKA + "/sitemap.xml"] + f.load_robots()))
     shops = {}
 
     # 1) sitemapy
