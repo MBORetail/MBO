@@ -26,6 +26,10 @@ Stejný provozovatel (fáze 2): u hlavního webu i u každé nalezené zahranič
   pravdepodobne  = shodné měřicí kódy (GTM/GA4/Ads/FB pixel), hreflang nebo vzájemné odkazy
   nejiste        = doména existuje, ale vazbu se nepodařilo doložit (ověřit ručně)
 
+Menší a střední e-shopy: velké obchody s vlastním řešením (Alza, Mall, Notino… – seznam BIG_SHOPS)
+se přeskakují a u každého e-shopu se zjistí platforma (Shoptet, Upgates, WooCommerce, Shopify…).
+  python heureka_intl.py intl shops.csv --platformy shoptet,upgates,woocommerce,shopify,prestashop
+
 Instalace:  pip install requests beautifulsoup4 lxml
 """
 import argparse
@@ -363,6 +367,39 @@ NOT_OPERATOR = re.compile(
     r"trusted shops|ekomi|smartsupp|ecomail|mailchimp|cookiebot|onetrust",
     re.I)
 
+# Rozpoznání e-shopové platformy (menší/střední e-shopy = krabicová řešení)
+PLATFORMS = [
+    ("Shoptet", re.compile(r"cdn\.myshoptet\.com|shoptet\.cz|/user/documents/|shoptet", re.I)),
+    ("Upgates", re.compile(r"upgates", re.I)),
+    ("Eshop-rychle", re.compile(r"eshop-rychle|ers\.cz/", re.I)),
+    ("Webareal", re.compile(r"webareal", re.I)),
+    ("ByznysWeb", re.compile(r"byznysweb", re.I)),
+    ("FastCentrik", re.compile(r"fastcentrik", re.I)),
+    ("Shopsys", re.compile(r"shopsys", re.I)),
+    ("Shopify", re.compile(r"cdn\.shopify\.com|Shopify\.theme", re.I)),
+    ("WooCommerce", re.compile(r"woocommerce", re.I)),
+    ("PrestaShop", re.compile(r"prestashop", re.I)),
+    ("Shopware", re.compile(r"shopware", re.I)),
+    ("Magento", re.compile(r"Magento_|mage/cookies|var BLANK_URL|/static/version\d+/frontend/", re.I)),
+    ("OpenCart", re.compile(r"route=product/|catalog/view/theme", re.I)),
+    ("Wix", re.compile(r"wixstatic\.com|_wixCIDX", re.I)),
+    ("Webnode", re.compile(r"webnode", re.I)),
+    ("BigCommerce", re.compile(r"bigcommerce", re.I)),
+]
+
+# Velké e-shopy s vlastním řešením – nejsou cílovka, přeskočí se (lze vypnout --vcetne-velkych)
+BIG_SHOPS = {
+    "alza", "mall", "notino", "datart", "czc", "kasa", "tsbohemia", "mironet", "electroworld",
+    "okay", "euronics", "planeo", "expert", "hornbach", "obi", "bauhaus", "ikea", "decathlon",
+    "sportisimo", "pilulka", "drmax", "benu", "rohlik", "kosik", "zoot", "answear", "aboutyou",
+    "zalando", "kaufland", "tchibo", "lidl", "dm", "rossmann", "knihydobrovsky", "martinus",
+    "luxor", "megaknihy", "kytary", "bonami", "vivantis", "prozdravi", "mountfield", "hudy",
+    "intersport", "a3sport", "4camping", "sizeer", "footshop", "fajn-brands", "lekarna", "mojelekarna",
+    "allegro", "temu", "shein", "aliexpress", "amazon", "ebay", "booking", "conrad", "elektro-bauhaus",
+    "smarty", "istyle", "mp3", "elkov", "siko", "xxxlutz", "jysk", "sconto", "mobelix", "asko",
+    "decodoma", "nay", "nay-elektrodom", "andrea", "babyshop", "dracik", "pompo", "hracky-pompo",
+    "pet-center", "zoohit", "zooplus", "bux", "sklik", "heureka", "glami", "mujrozpocet",
+}
 TRACKING_PATTERNS = {
     "gtm": re.compile(r"GTM-[A-Z0-9]{4,9}"),
     "ga4": re.compile(r"\bG-[A-Z0-9]{8,12}\b"),
@@ -445,6 +482,14 @@ def operator_pages(html, base, limit=2):
     return out[:limit]
 
 
+def detect_platform(html):
+    head = html[:400_000]
+    for name, rx in PLATFORMS:
+        if rx.search(head):
+            return name
+    return ""
+
+
 class Site:
     """Načtený web + jeho otisk (provozovatel, měřicí kódy, odkazy)."""
 
@@ -456,6 +501,7 @@ class Site:
         self.ids = {"ico": set(), "vat": set(), "firma": set()}
         self.track = {}
         self.hreflang, self.links, self.title = set(), set(), ""
+        self.platform = ""
 
     def load(self, operator_lookup=True):
         final, html = fetch_site("https://" + self.host)
@@ -467,6 +513,7 @@ class Site:
         self.final = final
         self.final_host = norm_domain(final) or self.host
         self.track = tracking_ids(html)
+        self.platform = detect_platform(html)
         self.hreflang, self.links, self.title = linked_hosts(html, final)
         self.ids = operator_ids(html)
         if operator_lookup and not (self.ids["ico"] or self.ids["vat"]):
@@ -528,10 +575,13 @@ def is_parked(html):
     return PARKED_HINTS.search(html[:20000]) or len(html) < 3000
 
 
-def analyse(domain, tlds, deep):
-    res = {"domena": domain, "stav": "", "titulek": "", "provozovatel": "",
+def analyse(domain, tlds, deep, include_big=False, only_platforms=None):
+    res = {"domena": domain, "stav": "", "titulek": "", "provozovatel": "", "platforma": "",
            "domeny": [], "nejiste": [], "pocet": 0, "pocet_zemi": 0,
            "pocet_stejny_provozovatel": 0, "zeme_stejny_provozovatel": 0}
+    if not include_big and split_domain(domain)[0] in BIG_SHOPS:
+        res["stav"] = "vyřazeno: velký e-shop"
+        return res
     main = Site(domain).load()
     if not main.ok:
         res["stav"] = "web nenačten"
@@ -539,6 +589,13 @@ def analyse(domain, tlds, deep):
     base_host = main.final_host
     brand, own_tld = split_domain(base_host)
     res["titulek"], res["provozovatel"] = main.title, main.operator_label()
+    res["platforma"] = main.platform or "vlastní / nerozpoznáno"
+    if not include_big and brand in BIG_SHOPS:
+        res["stav"] = "vyřazeno: velký e-shop"
+        return res
+    if only_platforms is not None and main.platform.lower() not in only_platforms:
+        res["stav"] = "vyřazeno: platforma " + res["platforma"]
+        return res
 
     cands = {}   # host -> zdroj nálezu
 
@@ -623,14 +680,19 @@ def cmd_intl(args):
     todo = list(dict.fromkeys(d for d, _ in domains if d not in done))
     tlds = args.tlds.split(",") if args.tlds else TLDS
     with open(cache_file, "a", encoding="utf-8") as cf, ThreadPoolExecutor(args.workers) as ex:
-        futs = {ex.submit(analyse, d, tlds, args.deep): d for d in todo}
+        only = None
+        if args.platformy:
+            only = {"" if p.strip().lower() == "vlastni" else p.strip().lower()
+                    for p in args.platformy.split(",") if p.strip()}
+        futs = {ex.submit(analyse, d, tlds, args.deep, args.vcetne_velkych, only): d for d in todo}
         for i, fu in enumerate(as_completed(futs), 1):
             try:
                 r = fu.result()
             except Exception as e:
                 r = {"domena": futs[fu], "stav": f"chyba: {e}", "domeny": [], "nejiste": []}
             done[r["domena"]] = r
-            cf.write(json.dumps(r, ensure_ascii=False) + "\n")
+            if not r.get("stav", "").startswith("vyřazeno"):   # vyřazené se při jiném filtru přepočítají
+                cf.write(json.dumps(r, ensure_ascii=False) + "\n")
             cf.flush()
             if i % 50 == 0 or i == len(todo):
                 log(f"{i}/{len(todo)}")
@@ -648,6 +710,7 @@ def cmd_intl(args):
         prob = [x for x in r["domeny"] if x["stejny_provozovatel"] != "ano"]
         row = {"domena": d,
                "provozovatel": r["provozovatel"],
+               "platforma": r.get("platforma", ""),
                "zeme_stejny_provozovatel": r["zeme_stejny_provozovatel"],
                "pocet_stejny_provozovatel": r["pocet_stejny_provozovatel"],
                "pocet_zemi": r["pocet_zemi"],
@@ -660,6 +723,11 @@ def cmd_intl(args):
             if h and h.lower() != "domena" and i < len(orig):
                 row["vstup_" + h] = orig[i]
         rows.append(row)
+    stats = {}
+    for d, _ in domains:
+        st = (done.get(d) or {}).get("stav", "?")
+        stats[st] = stats.get(st, 0) + 1
+    log("stav domén: " + ", ".join(f"{k} {v}" for k, v in sorted(stats.items(), key=lambda x: -x[1])))
     rows.sort(key=lambda x: (x["zeme_stejny_provozovatel"], x["pocet_stejny_provozovatel"],
                              x["pocet_zemi"], x["pocet_zahranicnich_domen"]), reverse=True)
     if not rows:
@@ -697,6 +765,11 @@ def main():
     i.add_argument("--same-operator", action="store_true",
                    help="--min počítat jen z domén s doloženým stejným provozovatelem (IČO/DIČ/firma)")
     i.add_argument("--limit", type=int, default=0, help="zpracovat jen prvních N domén (test)")
+    i.add_argument("--vcetne-velkych", action="store_true",
+                   help="nevyřazovat velké e-shopy (Alza, Mall, Notino… viz BIG_SHOPS)")
+    i.add_argument("--platformy", default="",
+                   help="jen e-shopy na těchto platformách, např. shoptet,upgates,woocommerce,shopify,prestashop "
+                        "('vlastni' = nerozpoznaná platforma)")
     i.set_defaults(func=cmd_intl)
 
     a = p.parse_args()
