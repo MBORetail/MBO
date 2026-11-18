@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-heureka_intl.py – seznam e-shopů z Heureka.cz + dohledání jejich mezinárodních domén.
+heureka_intl.py – seznam e-shopů z Heureka.sk + dohledání jejich mezinárodních domén.
 
 Dvě fáze, každá se dá spustit zvlášť a obě jdou kdykoli přerušit a navázat (cache):
 
   1) python heureka_intl.py shops            -> shops.csv (název, slug, Heureka URL, doména)
-     python heureka_intl.py shops --web sk   -> shops_sk.csv (totéž z Heureka.sk)
   2) python heureka_intl.py intl shops.csv   -> intl_vysledky.csv (seřazeno podle počtu zahraničních domén)
 
 Fáze 2 vezme jakékoli CSV/TXT s doménami v prvním sloupci (nebo sloupci "domena"),
@@ -13,7 +12,7 @@ takže ji jde pustit i na seznam obchodů ze Srovname.
 
 Šetrnost vůči Heurece (fáze 1):
   - seznam obchodů se bere primárně ze sitemap (pár XML souborů místo tisíců stránek),
-  - doména se odvodí ze slugu (obchody.heureka.cz/alza-cz/ -> alza.cz), detail obchodu
+  - doména se odvodí ze slugu (obchody.heureka.sk/alza-sk/ -> alza.sk), detail obchodu
     se stahuje jen tam, kde odvozená doména neexistuje v DNS,
   - jedno vlákno, náhodná pauza 4–9 s, respektuje robots.txt (Disallow i Crawl-delay),
   - každá stažená stránka se ukládá do cache, nic se nestahuje dvakrát,
@@ -49,14 +48,14 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-HEUREKA = "https://obchody.heureka.cz"
-HEUREKA_WWW = "https://www.heureka.cz"
+HEUREKA = "https://obchody.heureka.sk"
+HEUREKA_WWW = "https://www.heureka.sk"
 CACHE_DIR = ".cache_heureka"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; heureka-intl-check/1.0)",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.6",
+    "Accept-Language": "sk-SK,sk;q=0.9,cs;q=0.8,en;q=0.6",
 }
 
 # TLD, které se zkoušejí u každé značky (pořadí = priorita ve výstupu)
@@ -185,8 +184,8 @@ class PoliteFetcher:
         return None
 
     def load_robots(self):
-        # obchody.heureka.cz vlastní robots.txt nemá (/robots.txt -> /robots.txt/ -> 404 HTML),
-        # proto záložně pravidla hlavní domény www.heureka.cz
+        # obchody.heureka.sk vlastní robots.txt nemá (/robots.txt -> /robots.txt/ -> 404 HTML),
+        # proto záložně pravidla hlavní domény www.heureka.sk
         txt = ""
         for url in (HEUREKA + "/robots.txt", HEUREKA_WWW + "/robots.txt"):
             txt = self._fetch_robots(url) or ""
@@ -251,22 +250,8 @@ class PoliteFetcher:
         return r.text
 
 
-SHOP_URL_RE = re.compile(r"^https?://obchody\.heureka\.cz/([a-z0-9][a-z0-9\-]*[a-z0-9])/?$", re.I)
+SHOP_URL_RE = re.compile(r"^https?://obchody\.heureka\.sk/([a-z0-9][a-z0-9\-]*[a-z0-9])/?$", re.I)
 
-WEBS = {  # --web: Heureka.cz / Heureka.sk
-    "cz": ("cz", "cs-CZ,cs;q=0.9,en;q=0.6"),
-    "sk": ("sk", "sk-SK,sk;q=0.9,cs;q=0.8,en;q=0.6"),
-}
-
-
-def set_web(web):
-    """Přepne fázi 1 na Heureka.cz nebo Heureka.sk."""
-    global HEUREKA, HEUREKA_WWW, SHOP_URL_RE
-    tld, lang = WEBS[web]
-    HEUREKA = f"https://obchody.heureka.{tld}"
-    HEUREKA_WWW = f"https://www.heureka.{tld}"
-    SHOP_URL_RE = re.compile(rf"^https?://obchody\.heureka\.{tld}/([a-z0-9][a-z0-9\-]*[a-z0-9])/?$", re.I)
-    HEADERS["Accept-Language"] = lang
 
 
 def parse_sitemap(xml):
@@ -311,9 +296,6 @@ def domain_from_detail(html):
 
 
 def cmd_shops(args):
-    set_web(args.web)
-    if not args.out:
-        args.out = "shops.csv" if args.web == "cz" else f"shops_{args.web}.csv"
     log(f"zdroj: {HEUREKA}")
     f = PoliteFetcher(args.min_wait, args.max_wait, args.max_requests)
     sitemaps = list(dict.fromkeys([HEUREKA + "/sitemap.xml"] + f.load_robots()))
@@ -795,9 +777,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("shops", help="seznam obchodů z Heureka.cz")
-    s.add_argument("--web", choices=sorted(WEBS), default="cz", help="cz = Heureka.cz, sk = Heureka.sk")
-    s.add_argument("--out", default="", help="výstupní CSV (výchozí shops.csv, pro sk shops_sk.csv)")
+    s = sub.add_parser("shops", help="seznam obchodů z Heureka.sk")
+    s.add_argument("--out", default="shops.csv")
     s.add_argument("--min-wait", type=float, default=4.0, help="min. pauza mezi požadavky (s)")
     s.add_argument("--max-wait", type=float, default=9.0, help="max. pauza mezi požadavky (s)")
     s.add_argument("--max-requests", type=int, default=1500, help="limit požadavků na jedno spuštění")
