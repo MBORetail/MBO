@@ -5,6 +5,7 @@ heureka_intl.py – seznam e-shopů z Heureka.cz + dohledání jejich mezinárod
 Dvě fáze, každá se dá spustit zvlášť a obě jdou kdykoli přerušit a navázat (cache):
 
   1) python heureka_intl.py shops            -> shops.csv (název, slug, Heureka URL, doména)
+     python heureka_intl.py shops --web sk   -> shops_sk.csv (totéž z Heureka.sk)
   2) python heureka_intl.py intl shops.csv   -> intl_vysledky.csv (seřazeno podle počtu zahraničních domén)
 
 Fáze 2 vezme jakékoli CSV/TXT s doménami v prvním sloupci (nebo sloupci "domena"),
@@ -49,6 +50,7 @@ import requests
 from bs4 import BeautifulSoup
 
 HEUREKA = "https://obchody.heureka.cz"
+HEUREKA_WWW = "https://www.heureka.cz"
 CACHE_DIR = ".cache_heureka"
 
 HEADERS = {
@@ -186,7 +188,7 @@ class PoliteFetcher:
         # obchody.heureka.cz vlastní robots.txt nemá (/robots.txt -> /robots.txt/ -> 404 HTML),
         # proto záložně pravidla hlavní domény www.heureka.cz
         txt = ""
-        for url in (HEUREKA + "/robots.txt", "https://www.heureka.cz/robots.txt"):
+        for url in (HEUREKA + "/robots.txt", HEUREKA_WWW + "/robots.txt"):
             txt = self._fetch_robots(url) or ""
             if txt:
                 log(f"robots.txt: {url}")
@@ -251,6 +253,21 @@ class PoliteFetcher:
 
 SHOP_URL_RE = re.compile(r"^https?://obchody\.heureka\.cz/([a-z0-9][a-z0-9\-]*[a-z0-9])/?$", re.I)
 
+WEBS = {  # --web: Heureka.cz / Heureka.sk
+    "cz": ("cz", "cs-CZ,cs;q=0.9,en;q=0.6"),
+    "sk": ("sk", "sk-SK,sk;q=0.9,cs;q=0.8,en;q=0.6"),
+}
+
+
+def set_web(web):
+    """Přepne fázi 1 na Heureka.cz nebo Heureka.sk."""
+    global HEUREKA, HEUREKA_WWW, SHOP_URL_RE
+    tld, lang = WEBS[web]
+    HEUREKA = f"https://obchody.heureka.{tld}"
+    HEUREKA_WWW = f"https://www.heureka.{tld}"
+    SHOP_URL_RE = re.compile(rf"^https?://obchody\.heureka\.{tld}/([a-z0-9][a-z0-9\-]*[a-z0-9])/?$", re.I)
+    HEADERS["Accept-Language"] = lang
+
 
 def parse_sitemap(xml):
     soup = BeautifulSoup(xml, "xml")
@@ -294,6 +311,10 @@ def domain_from_detail(html):
 
 
 def cmd_shops(args):
+    set_web(args.web)
+    if not args.out:
+        args.out = "shops.csv" if args.web == "cz" else f"shops_{args.web}.csv"
+    log(f"zdroj: {HEUREKA}")
     f = PoliteFetcher(args.min_wait, args.max_wait, args.max_requests)
     sitemaps = list(dict.fromkeys([HEUREKA + "/sitemap.xml"] + f.load_robots()))
     shops = {}
@@ -775,7 +796,8 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("shops", help="seznam obchodů z Heureka.cz")
-    s.add_argument("--out", default="shops.csv")
+    s.add_argument("--web", choices=sorted(WEBS), default="cz", help="cz = Heureka.cz, sk = Heureka.sk")
+    s.add_argument("--out", default="", help="výstupní CSV (výchozí shops.csv, pro sk shops_sk.csv)")
     s.add_argument("--min-wait", type=float, default=4.0, help="min. pauza mezi požadavky (s)")
     s.add_argument("--max-wait", type=float, default=9.0, help="max. pauza mezi požadavky (s)")
     s.add_argument("--max-requests", type=int, default=1500, help="limit požadavků na jedno spuštění")
