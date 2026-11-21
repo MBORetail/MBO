@@ -95,6 +95,8 @@ def normalizuj_ean(v):
 
 def nacti_vstup(cesta):
     """Vrátí (seznam slovníků s klíčem 'ean', názvy dalších sloupců)."""
+    if cesta.lower().endswith(".xls"):
+        sys.exit("Starý formát .xls neumím načíst – v Excelu ho prosím uložte jako .xlsx nebo .csv.")
     if cesta.lower().endswith((".xlsx", ".xlsm")):
         from openpyxl import load_workbook
         ws = load_workbook(cesta, read_only=True, data_only=True).active
@@ -118,7 +120,9 @@ def nacti_vstup(cesta):
     else:
         data = radky[1:]
     mala = [h.lower() for h in hlavicka]
-    i_ean = mala.index("ean") if "ean" in mala else 0
+    # sloupec "ean", jinak první sloupec, jehož název obsahuje "ean" / "gtin" / "čárový kód", jinak první
+    i_ean = mala.index("ean") if "ean" in mala else next(
+        (i for i, h in enumerate(mala) if "ean" in h or "gtin" in h or "čárov" in h or "carov" in h), 0)
     dalsi = [h for i, h in enumerate(hlavicka) if i != i_ean]
     out, videno = [], set()
     for r in data:
@@ -163,7 +167,7 @@ class Databaze:
                 (beh, ean, mp, vys.status, vys.zprava,
                  n.cena if n else None, n.doprava if n else None, n.celkem if n else None,
                  n.mena if n else None, len(vys.nabidky), n.prodejce if n else None,
-                 n.titul if n else None, n.url if n else None,
+                 (n.titul if n else None) or vys.titul or None, n.url if n else None,
                  dt.datetime.now().isoformat(timespec="seconds")))
             self.db.commit()
 
@@ -227,6 +231,46 @@ def zpracuj_marketplace(adapter, eany, beh, db, znovu, prubeh):
         db.uloz(beh, ean, adapter.klic, vys)
         prubeh(adapter.klic, i, len(fronta), ean, vys)
     return len(fronta)
+
+
+NAZVY_MP = {"ebay_de": "eBay.de", "kaufland_de": "Kaufland.de", "kaufland_cz": "Kaufland.cz",
+            "allegro_pl": "Allegro.pl", "allegro_cz": "Allegro.cz"}
+
+
+def prehled(wb, vstup, klice, vys):
+    """Jednoduchý první list: EAN, název, a pro každý web cena / doprava / celkem."""
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    ws = wb.create_sheet("Přehled", 0)
+    hlavicka = ["EAN", "Název produktu"]
+    for k in klice:
+        m = NAZVY_MP.get(k, k)
+        hlavicka += [f"{m} cena", f"{m} doprava", f"{m} celkem", f"{m} měna", f"{m} prodejce"]
+    ws.append(hlavicka)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="DDEBF7")
+    for z in vstup:
+        ean = z["ean"]
+        nazev = next((vys[(ean, k)]["titul"] for k in klice
+                      if vys.get((ean, k)) and vys[(ean, k)]["titul"]), "")
+        if not nazev:   # název ze vstupního souboru, pokud tam je
+            nazev = next((str(v) for h, v in z.items()
+                          if h.lower() in ("nazev", "název", "name", "produkt", "popis") and v), "")
+        radek = [ean, nazev]
+        for k in klice:
+            v = vys.get((ean, k))
+            if v and v["status"] == "ok":
+                radek += [v["cena"], v["doprava"], v["celkem"], v["mena"], v["prodejce"]]
+            else:
+                stav = {"nenalezeno": "nenalezeno", "chyba": "chyba"}.get(v["status"], v["status"]) if v else ""
+                radek += [stav, None, None, None, None]
+        ws.append(radek)
+    ws.freeze_panes = "C2"
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 50
+    for i in range(3, len(hlavicka) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 14
 
 
 def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy):
@@ -305,6 +349,8 @@ def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy):
     w2.column_dimensions["A"].width = 16
     w2.column_dimensions["B"].width = 14
     w2.column_dimensions["D"].width = 80
+
+    prehled(wb, vstup, klice, vys)
 
     w3 = wb.create_sheet("Kurzy ČNB")
     w3.append(["měna", "CZK za 1 jednotku"])

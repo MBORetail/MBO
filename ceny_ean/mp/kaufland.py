@@ -79,7 +79,9 @@ class Kaufland(Adapter):
             nabidky = self.parsuj(d)
             if nabidky:
                 return Vysledek("ok", nabidky)
-            return Vysledek("nenalezeno", zprava=f"{cesta}: bez nabídek")
+            data = d.get("data") if isinstance(d, dict) else None
+            titul = data.get("title", "") if isinstance(data, dict) else ""
+            return Vysledek("nenalezeno", zprava="produkt existuje, ale bez nabídek konkurence", titul=titul)
         if posledni_chyba.endswith(": 404"):
             return Vysledek("nenalezeno")
         return Vysledek("chyba", zprava=posledni_chyba)

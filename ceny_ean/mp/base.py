@@ -43,6 +43,7 @@ class Vysledek:
     status: str                      # ok | nenalezeno | chyba | nepodporovano
     nabidky: list = field(default_factory=list)
     zprava: str = ""
+    titul: str = ""                  # název produktu, i když nemá nabídky
 
     @property
     def nejlevnejsi(self) -> Optional[Nabidka]:

@@ -154,3 +154,26 @@ class TestCelyBeh(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrehled(unittest.TestCase):
+    def test_prehled_s_nazvem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+
+            class A:
+                klic = "kaufland_de"
+
+                def hledej(self, ean):
+                    if ean == "1":
+                        return Vysledek("ok", [Nabidka("Parfum X", 34.0, "EUR", 0.0, "Shop")])
+                    return Vysledek("nenalezeno", titul="Parfum Y")
+            ce.zpracuj_marketplace(A(), ["1", "2"], "b", db, False, lambda *a: None)
+            out = os.path.join(tmp, "o.xlsx")
+            ce.export_xlsx(out, [{"ean": "1"}, {"ean": "2"}], [], ["kaufland_de"], db.vysledky("b"), {}, {"CZK": 1, "EUR": 25})
+            from openpyxl import load_workbook
+            ws = load_workbook(out)["Přehled"]
+            rows = [[c.value for c in r] for r in ws.iter_rows()]
+            self.assertEqual(rows[0][:4], ["EAN", "Název produktu", "Kaufland.de cena", "Kaufland.de doprava"])
+            self.assertEqual(rows[1], ["1", "Parfum X", 34, 0, 34, "EUR", "Shop"])
+            self.assertEqual(rows[2][:3], ["2", "Parfum Y", "nenalezeno"])
