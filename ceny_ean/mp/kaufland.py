@@ -12,6 +12,10 @@ a z odpovědi tolerantně vytáhne nabídky (pole s price / shipping_rate / sell
 Při prvním ostrém běhu spusťte s --debug a pošlete mi vzorek JSON, parser doladím.
 
 Doprava: pole shipping_rate je doprava v rámci daného storefrontu (de = do Německa, cz = do ČR).
+
+Ověřeno naostro (11/2026): /buybox vrací 404, /products/ean/{ean}?embedded=units funguje,
+ceny i doprava jsou v centech, prodejce je v units[].seller.pseudonym. id_unit je vyplněné
+u všech nabídek, vlastní nabídky se proto poznávají jen podle VLASTNI_PRODEJCI.
 """
 import hashlib
 import hmac
@@ -55,8 +59,8 @@ class Kaufland(Adapter):
         return r
 
     def hledej(self, ean):
+        # /buybox naostro vrací 404, proto jen jeden dotaz na EAN
         pokusy = [
-            ("/buybox", {"ean": ean, "storefront": self.storefront}),
             (f"/products/ean/{ean}", {"storefront": self.storefront, "embedded": "units"}),
         ]
         posledni_chyba = ""
@@ -106,14 +110,14 @@ class Kaufland(Adapter):
         out = []
         titul = ""
         data = d.get("data", d) if isinstance(d, dict) else d
+        url_produktu = ""
         if isinstance(data, dict):
             titul = data.get("title", "")
             id_product = data.get("id_product")
+            url_produktu = data.get("url", "")
         else:
             id_product = None
         for u in self._units(d):
-            if u.get("id_unit") or u.get("id_offer"):
-                continue  # id_unit/id_offer je vidět jen u vlastních nabídek
             seller = u.get("seller", "")
             if isinstance(seller, dict):
                 seller = seller.get("name") or seller.get("pseudonym") or ""
@@ -130,6 +134,6 @@ class Kaufland(Adapter):
                 doprava=self._castka(u.get("shipping_rate")),
                 prodejce=seller,
                 stav=u.get("condition", ""),
-                url=f"{WEB.get(self.storefront, '')}/product/{idp}/" if idp else "",
+                url=url_produktu or (f"{WEB.get(self.storefront, '')}/product/{idp}/" if idp else ""),
             ))
         return out

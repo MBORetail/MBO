@@ -87,18 +87,16 @@ class TestKaufland(unittest.TestCase):
         self.assertEqual(len(s), 64)
         self.assertEqual(s, s.lower())
 
-    def test_buybox_s_fallbackem(self):
+    def test_products_ean_units(self):
         a = Kaufland("cz", "k" * 32, "s" * 64, vlastni_prodejci=["Muj obchod"])
         data = {"data": {"title": "Fixa", "id_product": 123, "units": [
-            {"seller": "Konkurent A", "price": 24900, "shipping_rate": 7900, "buybox_rank": 1},
+            {"seller": {"pseudonym": "Konkurent A"}, "price": 24900, "shipping_rate": 7900, "id_unit": 7},
             {"seller": "Konkurent B", "price": 22900, "shipping_rate": 12900, "buybox_rank": 2},
-            {"seller": "Muj obchod", "price": 19900, "shipping_rate": 0, "id_unit": 5},
+            {"seller": {"pseudonym": "Muj obchod"}, "price": 19900, "shipping_rate": 0, "id_unit": 5},
         ]}}
-        odpovedi = [Odpoved(404, {}), Odpoved(200, data)]
-        with mock.patch.object(a.session, "request", side_effect=odpovedi) as req:
+        with mock.patch.object(a.session, "request", return_value=Odpoved(200, data)) as req:
             v = a.hledej("4006381333931")
-        self.assertIn("/v2/buybox?ean=4006381333931&storefront=cz", req.call_args_list[0].args[1])
-        self.assertIn("/v2/products/ean/4006381333931", req.call_args_list[1].args[1])
+        self.assertIn("/v2/products/ean/4006381333931?storefront=cz&embedded=units", req.call_args.args[1])
         self.assertEqual(v.status, "ok")
         self.assertEqual(len(v.nabidky), 2)
         n = v.nejlevnejsi
