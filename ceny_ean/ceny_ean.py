@@ -45,8 +45,10 @@ CNB_URL = ("https://www.cnb.cz/cs/financni-trhy/devizovy-trh/kurzy-devizoveho-tr
 
 # --- konfigurace -------------------------------------------------------------
 def nacti_env(cesta=os.path.join(ADRESAR, ".env")):
+    if not os.path.exists(cesta) and os.path.exists(cesta + ".txt"):
+        cesta += ".txt"   # Poznámkový blok rád přidá .txt
     if os.path.exists(cesta):
-        with open(cesta, encoding="utf-8") as f:
+        with open(cesta, encoding="utf-8-sig") as f:   # -sig: snese BOM z Poznámkového bloku
             for radek in f:
                 radek = radek.strip()
                 if radek and not radek.startswith("#") and "=" in radek:
@@ -342,7 +344,7 @@ def main():
         ap.error(f"neznámý marketplace: {', '.join(nezname)}")
     adaptery, chybi = vytvor_adaptery(klice, os.path.join(ADRESAR, "debug") if a.debug else None)
     for c in chybi:
-        print(f"! Přeskakuji {c} – chybí klíče v .env", file=sys.stderr)
+        print(f"! Přeskakuji {c} – chybí klíče v {os.path.join(ADRESAR, '.env')}", file=sys.stderr)
 
     if not os.path.exists(a.vstup) and normalizuj_ean(a.vstup) == a.vstup.strip():
         tisk_jednoho(a.vstup.strip(), adaptery)
