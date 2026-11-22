@@ -35,6 +35,7 @@ import requests
 
 from mp import MARKETPLACY, ZEME_DOPRAVY
 from mp.allegro import Allegro
+from mp.amazon import Amazon
 from mp.ebay import EbayDE
 from mp.kaufland import Kaufland
 from mp.kaufland_insight import nacti_insight
@@ -75,6 +76,14 @@ def vytvor_adaptery(klice, debug_dir):
                                   os.environ["KAUFLAND_SECRET_KEY"], **spol)
             else:
                 chybi.append(f"{k} (KAUFLAND_CLIENT_KEY / KAUFLAND_SECRET_KEY)")
+        elif k.startswith("amazon_"):
+            if all(os.environ.get(x) for x in ("AMAZON_CLIENT_ID", "AMAZON_CLIENT_SECRET", "AMAZON_REFRESH_TOKEN")):
+                out[k] = Amazon(k.split("_")[1], os.environ["AMAZON_CLIENT_ID"], os.environ["AMAZON_CLIENT_SECRET"],
+                                os.environ["AMAZON_REFRESH_TOKEN"],
+                                fba=os.environ.get("AMAZON_FBA", "ne").strip().lower() in ("ano", "1", "true", "yes"),
+                                **spol)
+            else:
+                chybi.append(f"{k} (AMAZON_CLIENT_ID / AMAZON_CLIENT_SECRET / AMAZON_REFRESH_TOKEN)")
         elif k.startswith("allegro_"):
             out[k] = Allegro(k.split("_")[1], **spol)
     return out, chybi
@@ -154,6 +163,10 @@ class Databaze:
         CREATE TABLE IF NOT EXISTS prodeje (beh TEXT, ean TEXT, marketplace TEXT, prodano INTEGER,
             mesicne REAL, nabidek INTEGER, cas TEXT, PRIMARY KEY (beh, ean, marketplace));
         """)
+        sloupce = [r[1] for r in self.db.execute("PRAGMA table_info(vysledek)")]
+        if "extra" not in sloupce:   # starší databáze
+            self.db.execute("ALTER TABLE vysledek ADD COLUMN extra TEXT")
+            self.db.commit()
 
     def hotove(self, beh, marketplace):
         with self.lock:
@@ -165,12 +178,14 @@ class Databaze:
         n = vys.nejlevnejsi
         with self.lock:
             self.db.execute(
-                "INSERT OR REPLACE INTO vysledek VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO vysledek (beh, ean, marketplace, status, zprava, cena, doprava, celkem, "
+                "mena, pocet, prodejce, titul, url, cas, extra) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (beh, ean, mp, vys.status, vys.zprava,
                  n.cena if n else None, n.doprava if n else None, n.celkem if n else None,
                  n.mena if n else None, len(vys.nabidky), n.prodejce if n else None,
                  (n.titul if n else None) or vys.titul or None, n.url if n else None,
-                 dt.datetime.now().isoformat(timespec="seconds")))
+                 dt.datetime.now().isoformat(timespec="seconds"),
+                 json.dumps(vys.extra, ensure_ascii=False) if vys.extra else None))
             ids = [x.item_id for x in sorted(vys.nabidky, key=lambda x: x.razeni()) if x.item_id]
             if ids:
                 self.db.execute("INSERT OR REPLACE INTO nabidka_ids VALUES (?,?,?,?)",
@@ -202,7 +217,12 @@ class Databaze:
         with self.lock:
             cur = self.db.execute("SELECT * FROM vysledek WHERE beh=?", (beh,))
             sloupce = [c[0] for c in cur.description]
-            return {(r[1], r[2]): dict(zip(sloupce, r)) for r in cur}
+            out = {}
+            for r in cur:
+                d = dict(zip(sloupce, r))
+                d["extra"] = json.loads(d["extra"]) if d.get("extra") else {}
+                out[(r[1], r[2])] = d
+            return out
 
     def predchozi_beh(self, beh):
         with self.lock:
@@ -249,6 +269,8 @@ def prevod(castka, mena, cil, kurzy):
 def zpracuj_marketplace(adapter, eany, beh, db, znovu, prubeh):
     hotove = set() if znovu else db.hotove(beh, adapter.klic)
     fronta = [e for e in eany if e not in hotove]
+    if hasattr(adapter, "hledej_davku"):
+        return _zpracuj_davkove(adapter, fronta, beh, db, prubeh)
     for i, ean in enumerate(fronta, 1):
         try:
             vys = adapter.hledej(ean)
@@ -261,6 +283,23 @@ def zpracuj_marketplace(adapter, eany, beh, db, znovu, prubeh):
             break
         db.uloz(beh, ean, adapter.klic, vys)
         prubeh(adapter.klic, i, len(fronta), ean, vys)
+    return len(fronta)
+
+
+def _zpracuj_davkove(adapter, fronta, beh, db, prubeh, velikost=20):
+    from mp import Vysledek
+    hotovo = 0
+    for i in range(0, len(fronta), velikost):
+        davka = fronta[i:i + velikost]
+        try:
+            vysl = adapter.hledej_davku(davka)
+        except Exception as e:
+            vysl = {ean: Vysledek("chyba", zprava=f"{type(e).__name__}: {e}"[:300]) for ean in davka}
+        for ean in davka:
+            hotovo += 1
+            vys = vysl.get(ean) or Vysledek("chyba", zprava="bez odpovědi")
+            db.uloz(beh, ean, adapter.klic, vys)
+            prubeh(adapter.klic, hotovo, len(fronta), ean, vys)
     return len(fronta)
 
 
@@ -291,7 +330,7 @@ def zpracuj_prodeje_ebay(adapter, eany, beh, db, top):
 
 
 NAZVY_MP = {"ebay_de": "eBay.de", "kaufland_de": "Kaufland.de", "kaufland_cz": "Kaufland.cz",
-            "allegro_pl": "Allegro.pl", "allegro_cz": "Allegro.cz"}
+            "allegro_pl": "Allegro.pl", "allegro_cz": "Allegro.cz", "amazon_de": "Amazon.de"}
 
 
 def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_sloupce=(), prodeje=None):
@@ -325,6 +364,8 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
         if objednavka:
             pole += ["tržba bez DPH EUR", "provize %", "zisk/ks EUR", "marže %"]
         pole += ["prodejce"]
+        if k.startswith("amazon_"):
+            pole += ["ASIN", "BSR", "BSR kategorie", "Buy Box EUR", "poplatky Amazon EUR"]
         if k == "ebay_de" and prodeje is not None:
             pole += ["odhad prodejů/měsíc", "prodáno celkem (top nabídky)"]
         if objednavka:
@@ -383,7 +424,9 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                 radek.update({sl["cena"]: v["cena"], sl["doprava"]: v["doprava"], sl["celkem"]: v["celkem"],
                               sl["měna"]: v["mena"], sl["celkem EUR"]: eur, sl["prodejce"]: v["prodejce"]})
                 if objednavka:
-                    zisk, marze = param.spocti(k, eur, nakup, kat)
+                    pop = (v.get("extra") or {}).get("poplatky")
+                    pop_eur = prevod(pop, v["mena"], "EUR", kurzy) if pop is not None else None
+                    zisk, marze = param.spocti(k, eur, nakup, kat, pop_eur)
                     radek.update({sl["tržba bez DPH EUR"]: param.trzba(k, eur),
                                   sl["provize %"]: param.provize(k, kat),
                                   sl["zisk/ks EUR"]: zisk, sl["marže %"]: marze})
@@ -391,6 +434,13 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                         zaporne += [sl["zisk/ks EUR"], sl["marže %"]]
             else:
                 radek[sl["cena"]] = v["status"] if v else ""
+            if "ASIN" in sl and v:
+                ex = v.get("extra") or {}
+                radek.update({sl["ASIN"]: ex.get("asin"), sl["BSR"]: ex.get("bsr"),
+                              sl["BSR kategorie"]: ex.get("bsr_kategorie"), sl["Buy Box EUR"]: ex.get("buybox"),
+                              sl["poplatky Amazon EUR"]: ex.get("poplatky")})
+                if v["status"] != "ok" and ex.get("asin"):
+                    radek[sl["cena"]] = v["status"]
             if "odhad prodejů/měsíc" in sl:
                 pr = (prodeje or {}).get((ean, k))
                 if pr:
@@ -467,6 +517,8 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                   "Tržba bez DPH = prodejní cena / (1 + DPH země prodeje).",
                   "Zisk/ks = tržba bez DPH − prodejní cena × provize % − fixní poplatek − nákup bez DPH − vaše doprava.",
                   "Marže % = zisk / tržba bez DPH.",
+                  "Amazon: poplatky = skutečný odhad z Amazon API (provize, u FBA i fulfillment) pro nejnižší cenu "
+                  "konkurence; jen když ho API nevrátí, použije se PROVIZE_AMAZON_* %. BSR = pořadí prodejnosti.",
                   "eBay odhad prodejů/měsíc = součet přes nejlevnější nabídky (EBAY_PRODEJE_TOP, výchozí 3): "
                   "prodané kusy nabídky / počet měsíců od jejího vystavení. Orientační údaj, ne skutečné měsíční prodeje.",
                   "Provize podle kategorie: parfém / kosmetika – určeno ze sloupce kategorie ve vstupu, "

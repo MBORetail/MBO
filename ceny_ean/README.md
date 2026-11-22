@@ -9,6 +9,7 @@ Pro seznam EAN zjistí nejnižší cenu nového zboží **včetně dopravy do ze
 | `kaufland_cz` | kaufland.cz | CZ | Kaufland Seller API | totéž |
 | `allegro_pl` | allegro.pl | PL | – | API ceny konkurence nevrací, zdroj se teprve volí |
 | `allegro_cz` | allegro.cz | CZ | – | totéž |
+| `amazon_de` | amazon.de | DE | Amazon Selling Partner API (váš prodejní účet) | hotovo, ověřit naostro; BSR, Buy Box a skutečné poplatky Amazonu |
 
 ## Instalace
 

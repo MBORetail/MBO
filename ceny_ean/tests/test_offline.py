@@ -433,3 +433,99 @@ class TestEbayProdeje(unittest.TestCase):
             self.assertEqual(db.hotove("b", "ebay_de"), {"1", "2"})    # ceny obou EAN uložené
             self.assertEqual(db.prodeje("b"), {})                       # odhad doplní další běh
             self.assertEqual(set(db.bez_odhadu_prodeju("b", "ebay_de")), {"1", "2"})
+
+
+class TestAmazon(unittest.TestCase):
+    KATALOG = {"numberOfResults": 1, "items": [{
+        "asin": "B0TEST1234",
+        "identifiers": [{"marketplaceId": "A1PA6795UKMFR9",
+                         "identifiers": [{"identifierType": "EAN", "identifier": "6290171075738"}]}],
+        "summaries": [{"marketplaceId": "A1PA6795UKMFR9", "itemName": "Afnan 9PM Elixir EDP 100ml", "brand": "Afnan"}],
+        "salesRanks": [{"marketplaceId": "A1PA6795UKMFR9",
+                        "classificationRanks": [{"classificationId": "1", "title": "Eau de Parfum", "rank": 57}],
+                        "displayGroupRanks": [{"websiteDisplayGroup": "beauty_display_on_website",
+                                               "title": "Beauty", "rank": 1234}]}]}]}
+    CENY = {"responses": [{"status": {"statusCode": 200}, "request": {"Asin": "B0TEST1234"}, "body": {"payload": {
+        "ASIN": "B0TEST1234", "status": "Success", "ItemCondition": "New", "marketplaceId": "A1PA6795UKMFR9",
+        "Identifier": {}, "Summary": {"TotalOfferCount": 4, "BuyBoxPrices": [
+            {"condition": "New", "LandedPrice": {"CurrencyCode": "EUR", "Amount": 31.9},
+             "ListingPrice": {"CurrencyCode": "EUR", "Amount": 31.9}, "Shipping": {"CurrencyCode": "EUR", "Amount": 0}}]},
+        "Offers": [
+            {"MyOffer": True, "SellerId": "JA", "ListingPrice": {"CurrencyCode": "EUR", "Amount": 25.0},
+             "Shipping": {"CurrencyCode": "EUR", "Amount": 0}, "IsFulfilledByAmazon": False},
+            {"SellerId": "A1", "ListingPrice": {"CurrencyCode": "EUR", "Amount": 29.5},
+             "Shipping": {"CurrencyCode": "EUR", "Amount": 3.9}, "IsFulfilledByAmazon": False},
+            {"SellerId": "A2", "ListingPrice": {"CurrencyCode": "EUR", "Amount": 31.9},
+             "Shipping": {"CurrencyCode": "EUR", "Amount": 0}, "IsFulfilledByAmazon": True, "IsBuyBoxWinner": True}]}}}]}
+    POPLATKY = [{"Status": "Success", "FeesEstimateIdentifier": {"IdType": "ASIN", "IdValue": "B0TEST1234"},
+                 "FeesEstimate": {"TimeOfFeesEstimation": "x",
+                                  "TotalFeesEstimate": {"CurrencyCode": "EUR", "Amount": 4.99}}}]
+
+    def _adapter(self):
+        from mp.amazon import Amazon
+        a = Amazon("de", "cid", "secret", "refresh")
+        a._token, a._token_do = "T", 1e12
+        return a
+
+    def test_davka_katalog_ceny_poplatky(self):
+        a = self._adapter()
+        odp = [Odpoved(200, self.KATALOG), Odpoved(200, self.CENY), Odpoved(200, self.POPLATKY)]
+        with mock.patch.object(a.session, "request", side_effect=odp) as req:
+            v = a.hledej_davku(["6290171075738", "4006381333931", "6291534659159"])
+        kat_call, ceny_call, fee_call = req.call_args_list
+        self.assertEqual(kat_call.kwargs["params"]["identifiersType"], "EAN")
+        self.assertEqual(kat_call.kwargs["params"]["identifiers"], "6290171075738,4006381333931")  # neplatný EAN vynechán
+        self.assertEqual(kat_call.kwargs["headers"]["x-amz-access-token"], "T")
+        self.assertIn("/products/pricing/v0/items/B0TEST1234/offers", ceny_call.kwargs["data"])
+        self.assertIn('"IsAmazonFulfilled": false', fee_call.kwargs["data"])
+        r = v["6290171075738"]
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(len(r.nabidky), 2)                         # vlastní nabídka (MyOffer) vyřazena
+        self.assertEqual((r.nejlevnejsi.cena, r.nejlevnejsi.doprava, r.nejlevnejsi.celkem), (31.9, 0.0, 31.9))  # 31.9 < 29.5+3.9
+        self.assertEqual(r.extra["bsr"], 1234)
+        self.assertEqual(r.extra["bsr_kategorie"], "Beauty")
+        self.assertEqual(r.extra["buybox"], 31.9)
+        self.assertEqual(r.extra["poplatky"], 4.99)
+        self.assertEqual(v["4006381333931"].status, "nenalezeno")   # není v katalogu
+        self.assertIn("neplatný", v["6291534659159"].zprava)
+
+    def test_vystup_se_skutecnymi_poplatky(self):
+        import zisk
+        a = self._adapter()
+        odp = [Odpoved(200, self.KATALOG), Odpoved(200, self.CENY), Odpoved(200, self.POPLATKY)]
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PROVIZE_", "FIX_", "DPH_", "DOPRAVA_", "NAKUP_"))}
+        env["NAKUP_MENA"] = "EUR"
+        with mock.patch.dict(os.environ, env, clear=True):
+            param = zisk.Parametry()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            with mock.patch.object(a.session, "request", side_effect=odp):
+                ce.zpracuj_marketplace(a, ["6290171075738"], "b", db, False, lambda *x: None)
+            out = os.path.join(tmp, "o.xlsx")
+            ce.export_xlsx(out, [{"ean": "6290171075738", "Price (EUR)": 12}], ["Price (EUR)"], ["amazon_de"],
+                           db.vysledky("b"), {}, {"CZK": 1, "EUR": 25}, {}, param)
+            from openpyxl import load_workbook
+            ws = load_workbook(out)["Přehled"]
+            r = dict(zip([c.value for c in ws[1]], [c.value for c in ws[2]]))
+            self.assertEqual(r["Amazon.de celkem EUR"], 31.9)
+            self.assertEqual(r["Amazon.de ASIN"], "B0TEST1234")
+            self.assertEqual(r["Amazon.de BSR"], 1234)
+            self.assertEqual(r["Amazon.de poplatky Amazon EUR"], 4.99)
+            # 31.9/1.19 = 26.807 − 4.99 − 12 = 9.82
+            self.assertEqual(r["Amazon.de zisk/ks EUR"], 9.82)
+
+    def test_stara_databaze_bez_sloupce_extra(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            cesta = os.path.join(tmp, "t.sqlite")
+            s = sqlite3.connect(cesta)
+            s.execute("CREATE TABLE vysledek (beh TEXT, ean TEXT, marketplace TEXT, status TEXT, zprava TEXT, "
+                      "cena REAL, doprava REAL, celkem REAL, mena TEXT, pocet INTEGER, prodejce TEXT, titul TEXT, "
+                      "url TEXT, cas TEXT, PRIMARY KEY (beh, ean, marketplace))")
+            s.execute("INSERT INTO vysledek VALUES ('b','1','ebay_de','ok','',1,0,1,'EUR',1,'s','t','u','c')")
+            s.commit()
+            s.close()
+            db = ce.Databaze(cesta)
+            self.assertEqual(db.vysledky("b")[("1", "ebay_de")]["extra"], {})
+            db.uloz("b", "2", "ebay_de", Vysledek("nenalezeno"))
+            self.assertEqual(len(db.vysledky("b")), 2)

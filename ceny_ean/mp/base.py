@@ -16,6 +16,7 @@ ZEME_DOPRAVY = {
     "kaufland_cz": "CZ",
     "allegro_pl": "PL",
     "allegro_cz": "CZ",
+    "amazon_de": "DE",
 }
 
 
@@ -45,6 +46,7 @@ class Vysledek:
     nabidky: list = field(default_factory=list)
     zprava: str = ""
     titul: str = ""                  # název produktu, i když nemá nabídky
+    extra: dict = field(default_factory=dict)   # doplňkové údaje marketplace (např. Amazon BSR, poplatky)
 
     @property
     def nejlevnejsi(self) -> Optional[Nabidka]:

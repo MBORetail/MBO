@@ -22,11 +22,14 @@ VYCHOZI = {
     "PROVIZE_KAUFLAND_KOSMETIKA": (13.0, "Kaufland (DE i CZ) provize % – kosmetika"),
     "PROVIZE_EBAY_PARFEM": (11.0, "eBay.de provize % – parfémy"),
     "PROVIZE_EBAY_KOSMETIKA": (12.0, "eBay.de provize % – kosmetika"),
+    "PROVIZE_AMAZON_PARFEM": (15.0, "Amazon provize % – parfémy (jen když API nevrátí skutečné poplatky)"),
+    "PROVIZE_AMAZON_KOSMETIKA": (15.0, "Amazon provize % – kosmetika (jen když API nevrátí skutečné poplatky)"),
     "PROVIZE_ALLEGRO_PARFEM": (10.0, "Allegro provize % – parfémy (ODHAD)"),
     "PROVIZE_ALLEGRO_KOSMETIKA": (10.0, "Allegro provize % – kosmetika (ODHAD)"),
     "FIX_EBAY_DE": (0.35, "eBay.de fixní poplatek za objednávku EUR"),
     "FIX_KAUFLAND_DE": (0.0, "Kaufland.de fixní poplatek za položku EUR"),
     "FIX_KAUFLAND_CZ": (0.0, "Kaufland.cz fixní poplatek za položku EUR"),
+    "FIX_AMAZON_DE": (0.0, "Amazon.de fixní poplatek EUR (jen když API nevrátí skutečné poplatky)"),
     "FIX_ALLEGRO_PL": (0.0, "Allegro.pl fixní poplatek EUR"),
     "FIX_ALLEGRO_CZ": (0.0, "Allegro.cz fixní poplatek EUR"),
     "DOPRAVA_DE": (0.0, "vaše náklady na dopravu 1 ks do DE, EUR"),
@@ -107,8 +110,9 @@ class Parametry:
         dph = self.hodnoty.get(f"DPH_{mp.split('_')[1].upper()}", 0.0)
         return round(prodej_eur / (1 + dph / 100), 2)
 
-    def spocti(self, mp, prodej_eur, nakup_eur, kategorie="kosmetika"):
-        """Vrátí (zisk EUR, marže %) nebo (None, None)."""
+    def spocti(self, mp, prodej_eur, nakup_eur, kategorie="kosmetika", poplatek_eur=None):
+        """Vrátí (zisk EUR, marže %) nebo (None, None).
+        poplatek_eur = skutečné poplatky marketplace (Amazon fees API); jinak provize % + fix."""
         if prodej_eur is None or nakup_eur is None:
             return None, None
         zeme = mp.split("_")[1].upper()
@@ -117,7 +121,7 @@ class Parametry:
         fix = self.hodnoty.get(f"FIX_{mp.upper()}", 0.0)
         doprava = self.hodnoty.get(f"DOPRAVA_{zeme}", 0.0)
         trzba = prodej_eur / (1 + dph / 100)
-        poplatek = prodej_eur * provize / 100 + fix
+        poplatek = poplatek_eur if poplatek_eur is not None else prodej_eur * provize / 100 + fix
         zisk = trzba - poplatek - nakup_eur - doprava
         return round(zisk, 2), (round(zisk / trzba * 100, 1) if trzba else None)
 
