@@ -23,6 +23,7 @@ Instalace:  pip install requests openpyxl
 """
 import argparse
 import csv
+import json
 import datetime as dt
 import os
 import sqlite3
@@ -148,6 +149,10 @@ class Databaze:
             prodejce TEXT, titul TEXT, url TEXT, cas TEXT,
             PRIMARY KEY (beh, ean, marketplace));
         CREATE TABLE IF NOT EXISTS kurz (datum TEXT, mena TEXT, czk REAL, PRIMARY KEY (datum, mena));
+        CREATE TABLE IF NOT EXISTS nabidka_ids (beh TEXT, ean TEXT, marketplace TEXT, ids TEXT,
+            PRIMARY KEY (beh, ean, marketplace));
+        CREATE TABLE IF NOT EXISTS prodeje (beh TEXT, ean TEXT, marketplace TEXT, prodano INTEGER,
+            mesicne REAL, nabidek INTEGER, cas TEXT, PRIMARY KEY (beh, ean, marketplace));
         """)
 
     def hotove(self, beh, marketplace):
@@ -166,7 +171,32 @@ class Databaze:
                  n.mena if n else None, len(vys.nabidky), n.prodejce if n else None,
                  (n.titul if n else None) or vys.titul or None, n.url if n else None,
                  dt.datetime.now().isoformat(timespec="seconds")))
+            ids = [x.item_id for x in sorted(vys.nabidky, key=lambda x: x.razeni()) if x.item_id]
+            if ids:
+                self.db.execute("INSERT OR REPLACE INTO nabidka_ids VALUES (?,?,?,?)",
+                                (beh, ean, mp, json.dumps(ids[:10])))
             self.db.commit()
+
+    def bez_odhadu_prodeju(self, beh, mp):
+        """EAN s nalezenými nabídkami, které ještě nemají odhad prodejů: {ean: [item_id…]}"""
+        with self.lock:
+            return {e: json.loads(i) for e, i in self.db.execute(
+                "SELECT n.ean, n.ids FROM nabidka_ids n JOIN vysledek v USING (beh, ean, marketplace) "
+                "WHERE n.beh=? AND n.marketplace=? AND v.status='ok' AND NOT EXISTS ("
+                "SELECT 1 FROM prodeje p WHERE p.beh=n.beh AND p.ean=n.ean AND p.marketplace=n.marketplace)",
+                (beh, mp))}
+
+    def uloz_prodeje(self, beh, ean, mp, prodano, mesicne, nabidek):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO prodeje VALUES (?,?,?,?,?,?,?)",
+                            (beh, ean, mp, prodano, mesicne, nabidek,
+                             dt.datetime.now().isoformat(timespec="seconds")))
+            self.db.commit()
+
+    def prodeje(self, beh):
+        with self.lock:
+            return {(e, m): {"prodano": p, "mesicne": me, "nabidek": n} for e, m, p, me, n in self.db.execute(
+                "SELECT ean, marketplace, prodano, mesicne, nabidek FROM prodeje WHERE beh=?", (beh,))}
 
     def vysledky(self, beh):
         with self.lock:
@@ -234,11 +264,37 @@ def zpracuj_marketplace(adapter, eany, beh, db, znovu, prubeh):
     return len(fronta)
 
 
+def zpracuj_prodeje_ebay(adapter, eany, beh, db, top):
+    """Druhá fáze eBay: odhad prodejů z top N nejlevnějších nabídek. Běží až po cenách,
+    takže spotřebuje jen zbytek denního limitu; co nestihne, doplní příští běh."""
+    if top <= 0 or adapter.vycerpano:
+        return
+    cekajici = db.bez_odhadu_prodeju(beh, adapter.klic)
+    fronta = [e for e in eany if e in cekajici]
+    if not fronta:
+        return
+    print(f"  {adapter.klic}: odhad prodejů pro {len(fronta)} EAN (až {top} dotazy na EAN)")
+    for i, ean in enumerate(fronta, 1):
+        try:
+            x = adapter.odhad_prodeju(cekajici[ean][:top])
+        except Exception as e:
+            print(f"  ! odhad prodejů {ean}: {e}", file=sys.stderr)
+            continue
+        if adapter.vycerpano:
+            print(f"! {adapter.klic}: denní limit vyčerpán při odhadu prodejů – zbývá {len(fronta) - i + 1} EAN, "
+                  f"doplní se při dalším spuštění.", file=sys.stderr)
+            return
+        prodano, mesicne, n = x if x else (None, None, 0)
+        db.uloz_prodeje(beh, ean, adapter.klic, prodano, mesicne, n)
+        if i % 100 == 0 or i == len(fronta):
+            print(f"  {adapter.klic} prodeje {i}/{len(fronta)}")
+
+
 NAZVY_MP = {"ebay_de": "eBay.de", "kaufland_de": "Kaufland.de", "kaufland_cz": "Kaufland.cz",
             "allegro_pl": "Allegro.pl", "allegro_cz": "Allegro.cz"}
 
 
-def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_sloupce=()):
+def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_sloupce=(), prodeje=None):
     """První list: EAN, název, kategorie, nákupní cena; pro každý web cena, zisk, marže
     a sloupec "objednat ks" se vzorci pro nákup a zisk za objednané množství; souhrn objednávky;
     údaje z Kaufland Assortment Insight."""
@@ -269,6 +325,8 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
         if objednavka:
             pole += ["tržba bez DPH EUR", "provize %", "zisk/ks EUR", "marže %"]
         pole += ["prodejce"]
+        if k == "ebay_de" and prodeje is not None:
+            pole += ["odhad prodejů/měsíc", "prodáno celkem (top nabídky)"]
         if objednavka:
             pole += ["OBJEDNAT ks", "nákup celkem EUR", "zisk celkem EUR"]
         sloupce[k] = {}
@@ -333,6 +391,11 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                         zaporne += [sl["zisk/ks EUR"], sl["marže %"]]
             else:
                 radek[sl["cena"]] = v["status"] if v else ""
+            if "odhad prodejů/měsíc" in sl:
+                pr = (prodeje or {}).get((ean, k))
+                if pr:
+                    radek[sl["odhad prodejů/měsíc"]] = pr["mesicne"]
+                    radek[sl["prodáno celkem (top nabídky)"]] = pr["prodano"]
             if objednavka:
                 ks = f"{L(sl['OBJEDNAT ks'])}{r}"
                 radek[sl["nákup celkem EUR"]] = f'=IF(AND(N({ks})>0,ISNUMBER({L(c_nakup)}{r})),{ks}*{L(c_nakup)}{r},"")'
@@ -404,6 +467,8 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                   "Tržba bez DPH = prodejní cena / (1 + DPH země prodeje).",
                   "Zisk/ks = tržba bez DPH − prodejní cena × provize % − fixní poplatek − nákup bez DPH − vaše doprava.",
                   "Marže % = zisk / tržba bez DPH.",
+                  "eBay odhad prodejů/měsíc = součet přes nejlevnější nabídky (EBAY_PRODEJE_TOP, výchozí 3): "
+                  "prodané kusy nabídky / počet měsíců od jejího vystavení. Orientační údaj, ne skutečné měsíční prodeje.",
                   "Provize podle kategorie: parfém / kosmetika – určeno ze sloupce kategorie ve vstupu, "
                   "jinak z kategorie Kauflandu, jinak podle názvu (Parfum, Eau de…, EDP, EDT…).",
                   "Do žlutých sloupců OBJEDNAT ks zapište množství – nákup, zisk a marže za objednávku se přepočítají.",
@@ -414,7 +479,8 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
         wp.column_dimensions["C"].width = 28
 
 
-def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy, insight=None, param=None):
+def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy, insight=None, param=None,
+                prodeje=None):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -491,7 +557,7 @@ def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy, insig
     w2.column_dimensions["B"].width = 14
     w2.column_dimensions["D"].width = 80
 
-    prehled(wb, vstup, klice, vys, kurzy, insight, param, dalsi_sloupce)
+    prehled(wb, vstup, klice, vys, kurzy, insight, param, dalsi_sloupce, prodeje)
 
     w3 = wb.create_sheet("Kurzy ČNB")
     w3.append(["měna", "CZK za 1 jednotku"])
@@ -574,7 +640,11 @@ def main():
     else:
         adaptery_k_dotazu = adaptery
     with ThreadPoolExecutor(max_workers=max(1, len(adaptery))) as ex:
-        list(ex.map(lambda ad: zpracuj_marketplace(ad, eany, beh, db, a.znovu, prubeh), adaptery_k_dotazu.values()))
+        def beh_mp(ad):
+            zpracuj_marketplace(ad, eany, beh, db, a.znovu, prubeh)
+            if ad.klic == "ebay_de":
+                zpracuj_prodeje_ebay(ad, eany, beh, db, int(os.environ.get("EBAY_PRODEJE_TOP", "3") or 0))
+        list(ex.map(beh_mp, adaptery_k_dotazu.values()))
 
     kurzy = kurzy_cnb(db)
     insight = {}
@@ -593,7 +663,7 @@ def main():
     pred = db.predchozi_beh(beh)
     vystup = a.vystup or os.path.join(ADRESAR, f"ceny_{beh}.xlsx")
     export_xlsx(vystup, vstup, dalsi, list(adaptery), db.vysledky(beh), db.vysledky(pred) if pred else {},
-                kurzy, insight, param)
+                kurzy, insight, param, db.prodeje(beh) if "ebay_de" in adaptery else None)
     print(f"Hotovo: {vystup}" + (f" (porovnáno s během {pred})" if pred else ""))
 
 

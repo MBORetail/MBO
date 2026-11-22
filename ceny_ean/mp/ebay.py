@@ -11,6 +11,7 @@ from .base import Adapter, Nabidka, Vysledek, cislo
 
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+ITEM_URL = "https://api.ebay.com/buy/browse/v1/item/"
 
 
 LIMIT = "denní limit eBay API vyčerpán – dotáže se při dalším spuštění"
@@ -122,5 +123,57 @@ class EbayDE(Adapter):
                 prodejce=prodejce,
                 stav=it.get("condition", ""),
                 url=it.get("itemWebUrl", ""),
+                item_id=it.get("itemId", ""),
             ))
         return out
+
+    # --- odhad prodejů ----------------------------------------------------------
+    def prodeje_nabidky(self, item_id):
+        """(prodáno kusů celkem, měsíců od vystavení) pro jednu nabídku, nebo None.
+        Browse getItem vrací estimatedAvailabilities[].estimatedSoldQuantity a itemCreationDate."""
+        if self.vycerpano:
+            return None
+        from urllib.parse import quote
+        r = self.pozadavek("GET", ITEM_URL + quote(item_id, safe=""), opakovat_429=False, headers={
+            "Authorization": f"Bearer {self.token()}",
+            "X-EBAY-C-MARKETPLACE-ID": "EBAY_DE",
+            "X-EBAY-C-ENDUSERCTX": "contextualLocation=country%3DDE%2Czip%3D10115",
+        })
+        if r.status_code == 429:
+            self.vycerpano = True
+            return None
+        if r.status_code == 401:
+            self._token = None
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        prodano = 0
+        for ea in d.get("estimatedAvailabilities") or []:
+            prodano += int(ea.get("estimatedSoldQuantity") or 0)
+        mesicu = 1.0
+        vytvoreno = d.get("itemCreationDate")
+        if vytvoreno:
+            import datetime as dt
+            try:
+                od = dt.datetime.fromisoformat(vytvoreno.replace("Z", "+00:00"))
+                dni = (dt.datetime.now(dt.timezone.utc) - od).days
+                mesicu = max(dni / 30.44, 1.0)   # nabídky mladší než měsíc počítáme jako 1 měsíc
+            except ValueError:
+                pass
+        return prodano, mesicu
+
+    def odhad_prodeju(self, item_ids):
+        """Součet přes nabídky: (prodáno celkem, odhad prodejů za měsíc, počet započtených nabídek)
+        nebo None, když se nic nepodařilo zjistit (např. vyčerpaný limit)."""
+        celkem, mesicne, n = 0, 0.0, 0
+        for iid in item_ids:
+            x = self.prodeje_nabidky(iid)
+            if x is None:
+                if self.vycerpano:
+                    return None
+                continue
+            prodano, mesicu = x
+            celkem += prodano
+            mesicne += prodano / mesicu
+            n += 1
+        return (celkem, round(mesicne, 1), n) if n else None

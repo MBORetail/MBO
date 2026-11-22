@@ -378,3 +378,58 @@ class TestCenikExanta(unittest.TestCase):
             self.assertEqual(r["Kategorie (provize)"], "parfém (název)")
             self.assertEqual(r["Nákupní cena bez DPH EUR"], 12.5)
             self.assertEqual(r["Sklad dodavatele ks"], 24)
+
+
+class TestEbayProdeje(unittest.TestCase):
+    def test_odhad_prodeju_po_cenach(self):
+        import datetime as _dt
+        a = EbayDE("id", "secret")
+        a._token, a._token_do = "T", 1e12
+        pred_rokem = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=365)).isoformat().replace("+00:00", "Z")
+        hledani = {"itemSummaries": [
+            {"itemId": "v1|111|0", "title": "P", "price": {"value": "20"}, "seller": {"username": "a"},
+             "shippingOptions": [{"shippingCost": {"value": "0"}}], "itemWebUrl": "u1"},
+            {"itemId": "v1|222|0", "title": "P", "price": {"value": "25"}, "seller": {"username": "b"},
+             "shippingOptions": [{"shippingCost": {"value": "0"}}], "itemWebUrl": "u2"}]}
+        item1 = {"estimatedAvailabilities": [{"estimatedSoldQuantity": 120}], "itemCreationDate": pred_rokem}
+        item2 = {"estimatedAvailabilities": [{"estimatedSoldQuantity": 0}],
+                 "itemCreationDate": _dt.datetime.now(_dt.timezone.utc).isoformat()}
+        odp = [Odpoved(200, hledani), Odpoved(200, item1), Odpoved(200, item2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            with mock.patch.object(a.session, "request", side_effect=odp) as req:
+                ce.zpracuj_marketplace(a, ["4006381333931"], "b", db, False, lambda *x: None)
+                ce.zpracuj_prodeje_ebay(a, ["4006381333931"], "b", db, 3)
+            self.assertIn("v1%7C111%7C0", req.call_args_list[1].args[1])   # getItem nejlevnější nabídky
+            p = db.prodeje("b")[("4006381333931", "ebay_de")]
+            self.assertEqual(p["prodano"], 120)
+            self.assertAlmostEqual(p["mesicne"], round(120 / (365 / 30.44), 1))   # ~10 ks/měsíc
+            self.assertEqual(p["nabidek"], 2)
+            # podruhé už se nic nedotazuje
+            with mock.patch.object(a.session, "request") as req:
+                ce.zpracuj_prodeje_ebay(a, ["4006381333931"], "b", db, 3)
+            req.assert_not_called()
+            out = os.path.join(tmp, "o.xlsx")
+            ce.export_xlsx(out, [{"ean": "4006381333931"}], [], ["ebay_de"], db.vysledky("b"), {},
+                           {"CZK": 1, "EUR": 25}, {}, None, db.prodeje("b"))
+            from openpyxl import load_workbook
+            ws = load_workbook(out)["Přehled"]
+            r = dict(zip([c.value for c in ws[1]], [c.value for c in ws[2]]))
+            self.assertAlmostEqual(r["eBay.de odhad prodejů/měsíc"], 10.0, delta=0.2)
+            self.assertEqual(r["eBay.de prodáno celkem (top nabídky)"], 120)
+
+    def test_limit_pri_odhadu_nezastavi_ceny(self):
+        a = EbayDE("id", "secret")
+        a._token, a._token_do = "T", 1e12
+        hledani = {"itemSummaries": [{"itemId": "v1|1|0", "title": "P", "price": {"value": "20"},
+                                      "seller": {"username": "a"}, "itemWebUrl": "u"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            with mock.patch.object(a.session, "request",
+                                   side_effect=[Odpoved(200, hledani), Odpoved(200, hledani), Odpoved(429, {})]), \
+                    mock.patch("sys.stderr"):
+                ce.zpracuj_marketplace(a, ["1", "2"], "b", db, False, lambda *x: None)
+                ce.zpracuj_prodeje_ebay(a, ["1", "2"], "b", db, 3)
+            self.assertEqual(db.hotove("b", "ebay_de"), {"1", "2"})    # ceny obou EAN uložené
+            self.assertEqual(db.prodeje("b"), {})                       # odhad doplní další běh
+            self.assertEqual(set(db.bez_odhadu_prodeju("b", "ebay_de")), {"1", "2"})

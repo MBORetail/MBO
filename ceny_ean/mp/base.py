@@ -28,6 +28,7 @@ class Nabidka:
     prodejce: str = ""
     stav: str = ""
     url: str = ""
+    item_id: str = ""                # ID nabídky na marketplace (eBay: "v1|123|0")
 
     @property
     def celkem(self) -> Optional[float]:
