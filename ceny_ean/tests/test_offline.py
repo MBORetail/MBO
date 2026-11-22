@@ -351,3 +351,30 @@ class TestEbayLimit(unittest.TestCase):
                 ce.zpracuj_marketplace(a, ["1", "2", "3", "4"], "b", db, False, lambda *x: None)
             self.assertEqual(req.call_count, 2)                    # žádné opakování po 429
             self.assertEqual(db.hotove("b", "ebay_de"), {"1"})     # zbytek zůstane na příště
+
+
+class TestCenikExanta(unittest.TestCase):
+    def test_sloupce_dodavatele(self):
+        from openpyxl import Workbook, load_workbook
+        import zisk
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "exanta.xlsx")
+            wb = Workbook()
+            wb.active.append(["EAN", "Brand", "Item Description", "Av", "Stock (Pcs)", "Price (EUR)"])
+            wb.active.append([6290171075738, "Afnan", "9PM Elixir EDP 100ml", "", 24, 12.5])
+            wb.save(src)
+            vstup, dalsi = ce.nacti_vstup(src)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("SLOUPEC_", "NAKUP_"))}
+            env["NAKUP_MENA"] = "EUR"
+            with mock.patch.dict(os.environ, env, clear=True):
+                param = zisk.Parametry()
+            self.assertEqual(param.najdi_sloupec(dalsi), "Price (EUR)")
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            out = os.path.join(tmp, "o.xlsx")
+            ce.export_xlsx(out, vstup, dalsi, ["kaufland_de"], db.vysledky("b"), {}, {"CZK": 1, "EUR": 25}, {}, param)
+            ws = load_workbook(out)["Přehled"]
+            r = dict(zip([c.value for c in ws[1]], [c.value for c in ws[2]]))
+            self.assertEqual(r["Název produktu"], "9PM Elixir EDP 100ml")
+            self.assertEqual(r["Kategorie (provize)"], "parfém (název)")
+            self.assertEqual(r["Nákupní cena bez DPH EUR"], 12.5)
+            self.assertEqual(r["Sklad dodavatele ks"], 24)

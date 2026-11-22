@@ -54,7 +54,8 @@ def urci_kategorii(vstup_hodnota=None, insight_kategorie=None, titul=None):
 
 
 NAZVY_SLOUPCE_NAKUP = ("nakupni cena", "nákupní cena", "nakup", "nákup", "nakupni", "nákupní",
-                       "nc", "purchase price", "einkaufspreis", "cost", "cena nakup", "cena nákup")
+                       "nc", "purchase price", "einkaufspreis", "cost", "cena nakup", "cena nákup",
+                       "price (eur)", "price eur", "price", "cena", "cena (eur)", "unit price")
 
 
 def _f(v):

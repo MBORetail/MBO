@@ -250,12 +250,18 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
     sl_nakup = param.najdi_sloupec(dalsi_sloupce) if param else None
     sl_kat = param.najdi_sloupec_kategorie(dalsi_sloupce) if param else None
     objednavka = bool(sl_nakup)
+    sl_sklad = next((s_ for s_ in dalsi_sloupce if s_.strip().lower() in
+                     ("stock (pcs)", "stock", "sklad", "skladem", "qty", "quantity", "množství", "mnozstvi",
+                      "available", "dostupnost", "bestand")), None)
 
     # --- rozvržení sloupců ---
     hlavicka = ["EAN", "Název produktu", "Kategorie (provize)"]
     if objednavka:
         hlavicka.append("Nákupní cena bez DPH EUR")
     c_nakup = len(hlavicka) if objednavka else None
+    if sl_sklad:
+        hlavicka.append("Sklad dodavatele ks")
+    c_sklad = len(hlavicka) if sl_sklad else None
     sloupce = {}   # mp -> {nazev_pole: index sloupce (1-based)}
     for k in klice:
         m = NAZVY_MP.get(k, k)
@@ -298,13 +304,17 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
                       if vys.get((ean, k)) and vys[(ean, k)]["titul"]), "") or (ins.get("item_name") or "")
         if not nazev:   # název ze vstupního souboru, pokud tam je
             nazev = next((str(v) for h, v in z.items()
-                          if h.lower() in ("nazev", "název", "name", "produkt", "popis") and v), "")
+                          if h.lower() in ("nazev", "název", "name", "produkt", "popis", "item description",
+                                           "description", "product name", "item name") and v), "")
         kat, zdroj = urci_kategorii(z.get(sl_kat) if sl_kat else None, ins.get("category"), nazev)
         radek = {1: ean, 2: nazev, 3: f"{'parfém' if kat == 'parfem' else 'kosmetika'} ({zdroj})"}
         nakup = None
         if objednavka:
             nakup = param.nakup_eur(z.get(sl_nakup), kurzy)
             radek[c_nakup] = round(nakup, 2) if nakup is not None else None
+        if sl_sklad:
+            from zisk import _f
+            radek[c_sklad] = _f(z.get(sl_sklad))
         zaporne = []
         for k in klice:
             sl = sloupce[k]
