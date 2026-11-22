@@ -29,6 +29,8 @@ python ceny_ean.py eany.csv --debug               # surové odpovědi API do deb
 * Vstup: CSV (`,` `;` nebo tab) nebo XLSX. EAN ze sloupce `ean`, jinak z prvního sloupce. Další sloupce se přenesou do výstupu.
 * Výsledky se průběžně ukládají do `data/ceny.sqlite` pod označením běhu (kalendářní týden). Přerušený běh po novém spuštění pokračuje. `--znovu` vynutí nové dotazy.
 * Výstup XLSX: list **Ceny** (řádek na EAN, pro každý web cena, doprava, celkem, přepočet na CZK/EUR podle ČNB, změna proti minulému týdnu, počet nabídek, prodejce, odkaz), list **Nenalezeno a chyby** a list **Kurzy ČNB**.
+* **Zisk a marže:** pokud má vstup sloupec s nákupní cenou (`nákupní cena`, `nakup`, `NC`, nebo název v `SLOUPEC_NAKUP`), spočítá se pro každý web zisk na kus v EUR a hrubá marže v %. Prodejní cena = nejnižší cena konkurence vč. dopravy; odečte se DPH země prodeje, provize marketplace (% + fix), nákupní cena bez DPH a vaše doprava. Sazby se nastavují v `.env` (viz `.env.example`), použité hodnoty jsou ve výstupu na listu **Parametry výpočtu**.
+* **Kaufland Assortment Insight:** pořadí prodejnosti, bestseller, poptávka mimo Kaufland a průměrné ceny Buy Boxu (30/90 dní). Celý seznam (~300 tis. produktů) se stahuje jednou denně; obsahuje jen produkty, které Kaufland doporučuje do sortimentu, a jen Kaufland.de. Vypnout: `--bez-insight`.
 * `VLASTNI_PRODEJCI` v `.env` vyřadí vaše vlastní nabídky. U Kauflandu se vlastní nabídky poznají i automaticky.
 
 ## Týdenní spouštění (cron, pondělí 5:00)

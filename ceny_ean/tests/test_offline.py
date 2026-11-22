@@ -187,5 +187,68 @@ class TestPrehled(unittest.TestCase):
             ws = load_workbook(out)["Přehled"]
             rows = [[c.value for c in r] for r in ws.iter_rows()]
             self.assertEqual(rows[0][:4], ["EAN", "Název produktu", "Kaufland.de cena", "Kaufland.de doprava"])
-            self.assertEqual(rows[1], ["1", "Parfum X", 34, 0, 34, "EUR", "Shop"])
+            self.assertEqual(rows[1], ["1", "Parfum X", 34, 0, 34, "EUR", 34, "Shop"])
             self.assertEqual(rows[2][:3], ["2", "Parfum Y", "nenalezeno"])
+
+
+class TestZisk(unittest.TestCase):
+    def test_zisk_marze_a_insight(self):
+        import zisk
+        with mock.patch.dict(os.environ, {"NAKUP_MENA": "CZK", "PROVIZE_KAUFLAND_CZ": "12"}, clear=False):
+            for k in ("NAKUP_S_DPH", "SLOUPEC_NAKUP", "DOPRAVA_CZ", "FIX_KAUFLAND_CZ", "DPH_CZ"):
+                os.environ.pop(k, None)
+            param = zisk.Parametry()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            kc = FalesnyAdapter("kaufland_cz", {"4006381333931": (300.0, 79.0, "CZK")})
+            ce.zpracuj_marketplace(kc, ["4006381333931"], "b", db, False, lambda *a: None)
+            out = os.path.join(tmp, "o.xlsx")
+            insight = {"4006381333931": {"sales_rank": 120, "kaufland_bestseller": True,
+                                         "external_demand_indicator": "High", "buybox_price_current": 1599,
+                                         "buybox_price_l_30_day": 1650, "buybox_price_l_90_day": None}}
+            ce.export_xlsx(out, [{"ean": "4006381333931", "Nákupní cena": "200"}], ["Nákupní cena"],
+                           ["kaufland_cz"], db.vysledky("b"), {}, {"CZK": 1.0, "EUR": 25.0}, insight, param)
+            from openpyxl import load_workbook
+            wb = load_workbook(out)
+            ws = wb["Přehled"]
+            h = [c.value for c in ws[1]]
+            r = dict(zip(h, [c.value for c in ws[2]]))
+            self.assertEqual(r["Nákupní cena bez DPH EUR"], 8.0)
+            self.assertEqual(r["Kaufland.cz celkem EUR"], 15.16)
+            # 15.16/1.21 = 12.529 ; poplatek 12 % z 15.16 = 1.819 ; 12.529 − 1.819 − 8 = 2.71
+            self.assertEqual(r["Kaufland.cz zisk EUR"], 2.71)
+            self.assertEqual(r["Kaufland.cz marže %"], 21.6)
+            self.assertEqual(r["Kaufland pořadí prodejnosti"], 120)
+            self.assertEqual(r["Kaufland bestseller"], "ano")
+            self.assertEqual(r["Buy Box aktuálně EUR"], 15.99)
+            self.assertIn("Parametry výpočtu", wb.sheetnames)
+
+    def test_nakup_s_dph(self):
+        import zisk
+        with mock.patch.dict(os.environ, {"NAKUP_MENA": "EUR", "NAKUP_S_DPH": "ano", "DPH_NAKUP": "21"}):
+            p = zisk.Parametry()
+        self.assertEqual(round(p.nakup_eur("12,10", {"CZK": 1, "EUR": 25}), 2), 10.0)
+        self.assertEqual(p.spocti("ebay_de", None, 10), (None, None))
+
+
+class TestInsight(unittest.TestCase):
+    def test_strankovani_a_parovani(self):
+        from mp.kaufland_insight import nacti_insight
+        stranky = [
+            Odpoved(200, {"data": [{"ean": "4006381333931", "sales_rank": 5}, {"ean": "1111111111111"}],
+                          "pagination": {"offset": 0, "limit": 2, "total": 3}}),
+            Odpoved(200, {"data": [{"ean": "0012345678905", "sales_rank": 9}],
+                          "pagination": {"offset": 2, "limit": 2, "total": 3}}),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            with mock.patch("requests.Session.request", side_effect=stranky) as req:
+                out = nacti_insight(db, "k", "s", ["4006381333931", "012345678905", "9999999999994"],
+                                    prubeh=lambda *a: None)
+            self.assertEqual(req.call_count, 2)
+            self.assertEqual(out["4006381333931"]["sales_rank"], 5)
+            self.assertEqual(out["012345678905"]["sales_rank"], 9)     # UPC-12 doplněný nulou na EAN-13
+            self.assertNotIn("9999999999994", out)
+            with mock.patch("requests.Session.request") as req:        # podruhé z cache
+                nacti_insight(db, "k", "s", ["4006381333931"], prubeh=lambda *a: None)
+            req.assert_not_called()

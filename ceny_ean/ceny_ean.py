@@ -36,6 +36,8 @@ from mp import MARKETPLACY, ZEME_DOPRAVY
 from mp.allegro import Allegro
 from mp.ebay import EbayDE
 from mp.kaufland import Kaufland
+from mp.kaufland_insight import nacti_insight
+from zisk import Parametry
 
 ADRESAR = os.path.dirname(os.path.abspath(__file__))
 DB_CESTA = os.path.join(ADRESAR, "data", "ceny.sqlite")
@@ -237,43 +239,101 @@ NAZVY_MP = {"ebay_de": "eBay.de", "kaufland_de": "Kaufland.de", "kaufland_cz": "
             "allegro_pl": "Allegro.pl", "allegro_cz": "Allegro.cz"}
 
 
-def prehled(wb, vstup, klice, vys):
-    """Jednoduchý první list: EAN, název, a pro každý web cena / doprava / celkem."""
+def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_sloupce=()):
+    """První list: EAN, název, nákupní cena, pro každý web cena / doprava / celkem / zisk / marže,
+    a údaje z Kaufland Assortment Insight."""
     from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
+    kurzy = kurzy or {}
+    insight = insight or {}
+    sl_nakup = param.najdi_sloupec(dalsi_sloupce) if param else None
+
     ws = wb.create_sheet("Přehled", 0)
     hlavicka = ["EAN", "Název produktu"]
+    if sl_nakup:
+        hlavicka += ["Nákupní cena bez DPH EUR"]
     for k in klice:
         m = NAZVY_MP.get(k, k)
-        hlavicka += [f"{m} cena", f"{m} doprava", f"{m} celkem", f"{m} měna", f"{m} prodejce"]
+        hlavicka += [f"{m} cena", f"{m} doprava", f"{m} celkem", f"{m} měna", f"{m} celkem EUR"]
+        if sl_nakup:
+            hlavicka += [f"{m} zisk EUR", f"{m} marže %"]
+        hlavicka += [f"{m} prodejce"]
+    s_insight = bool(insight)
+    if s_insight:
+        hlavicka += ["Kaufland pořadí prodejnosti", "Kaufland bestseller", "Poptávka mimo Kaufland",
+                     "Buy Box aktuálně EUR", "Buy Box Ø 30 dní EUR", "Buy Box Ø 90 dní EUR"]
     ws.append(hlavicka)
     for c in ws[1]:
         c.font = Font(bold=True)
         c.fill = PatternFill("solid", fgColor="DDEBF7")
+    cervena = Font(color="C00000")
+
     for z in vstup:
         ean = z["ean"]
+        ins = insight.get(ean) or {}
         nazev = next((vys[(ean, k)]["titul"] for k in klice
-                      if vys.get((ean, k)) and vys[(ean, k)]["titul"]), "")
+                      if vys.get((ean, k)) and vys[(ean, k)]["titul"]), "") or (ins.get("item_name") or "")
         if not nazev:   # název ze vstupního souboru, pokud tam je
             nazev = next((str(v) for h, v in z.items()
                           if h.lower() in ("nazev", "název", "name", "produkt", "popis") and v), "")
         radek = [ean, nazev]
+        nakup = None
+        if sl_nakup:
+            nakup = param.nakup_eur(z.get(sl_nakup), kurzy)
+            radek.append(round(nakup, 2) if nakup is not None else None)
+        zaporne = []
         for k in klice:
             v = vys.get((ean, k))
             if v and v["status"] == "ok":
-                radek += [v["cena"], v["doprava"], v["celkem"], v["mena"], v["prodejce"]]
+                castka = v["celkem"] if v["celkem"] is not None else v["cena"]
+                eur = prevod(castka, v["mena"], "EUR", kurzy)
+                radek += [v["cena"], v["doprava"], v["celkem"], v["mena"], eur]
+                if sl_nakup:
+                    zisk, marze = param.spocti(k, eur, nakup)
+                    if zisk is not None and zisk < 0:
+                        zaporne += [len(radek) + 1, len(radek) + 2]
+                    radek += [zisk, marze]
+                radek += [v["prodejce"]]
             else:
-                stav = {"nenalezeno": "nenalezeno", "chyba": "chyba"}.get(v["status"], v["status"]) if v else ""
-                radek += [stav, None, None, None, None]
+                stav = v["status"] if v else ""
+                radek += [stav, None, None, None, None] + ([None, None] if sl_nakup else []) + [None]
+        if s_insight:
+            def eur(c):
+                return round(c / 100, 2) if isinstance(c, (int, float)) else None
+            radek += [ins.get("sales_rank"),
+                      {True: "ano", False: "ne"}.get(ins.get("kaufland_bestseller"), None),
+                      ins.get("external_demand_indicator"),
+                      eur(ins.get("buybox_price_current")), eur(ins.get("buybox_price_l_30_day")),
+                      eur(ins.get("buybox_price_l_90_day"))]
         ws.append(radek)
+        for col in zaporne:
+            ws.cell(ws.max_row, col).font = cervena
     ws.freeze_panes = "C2"
     ws.column_dimensions["A"].width = 16
     ws.column_dimensions["B"].width = 50
     for i in range(3, len(hlavicka) + 1):
         ws.column_dimensions[get_column_letter(i)].width = 14
 
+    if param:
+        wp = wb.create_sheet("Parametry výpočtu", 1)
+        wp.append(["parametr", "hodnota", "nastavení v .env"])
+        for c in wp[1]:
+            c.font = Font(bold=True)
+        wp.append(["Sloupec s nákupní cenou ve vstupu", sl_nakup or "NENALEZEN – zisk se nepočítá", "SLOUPEC_NAKUP"])
+        for r in param.radky_popisu():
+            wp.append(r)
+        wp.append([])
+        for t in ("Prodejní cena = nejnižší cena konkurence vč. dopravy, přepočtená na EUR kurzem ČNB.",
+                  "Zisk = prodejní cena / (1 + DPH) − prodejní cena × provize % − fixní poplatek − nákup bez DPH − vaše doprava.",
+                  "Marže % = zisk / prodejní cena bez DPH.",
+                  "Hodnoty označené (výchozí) jsou odhady – upravte je v .env podle svých smluv a kategorií."):
+            wp.append([t])
+        wp.column_dimensions["A"].width = 70
+        wp.column_dimensions["B"].width = 22
+        wp.column_dimensions["C"].width = 28
 
-def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy):
+
+def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy, insight=None, param=None):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -350,7 +410,7 @@ def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy):
     w2.column_dimensions["B"].width = 14
     w2.column_dimensions["D"].width = 80
 
-    prehled(wb, vstup, klice, vys)
+    prehled(wb, vstup, klice, vys, kurzy, insight, param, dalsi_sloupce)
 
     w3 = wb.create_sheet("Kurzy ČNB")
     w3.append(["měna", "CZK za 1 jednotku"])
@@ -385,6 +445,7 @@ def main():
     ap.add_argument("--znovu", action="store_true", help="nenavazovat, dotázat se znovu na vše")
     ap.add_argument("--vystup", help="cesta k výstupnímu XLSX (výchozí ceny_<beh>.xlsx)")
     ap.add_argument("--debug", action="store_true", help="ukládat surové odpovědi API do debug/")
+    ap.add_argument("--bez-insight", action="store_true", help="nestahovat Kaufland Assortment Insight")
     a = ap.parse_args()
 
     nacti_env()
@@ -429,9 +490,23 @@ def main():
         list(ex.map(lambda ad: zpracuj_marketplace(ad, eany, beh, db, a.znovu, prubeh), adaptery.values()))
 
     kurzy = kurzy_cnb(db)
+    insight = {}
+    if not a.bez_insight and os.environ.get("KAUFLAND_CLIENT_KEY") and \
+            any(k.startswith("kaufland_") for k in adaptery):
+        try:
+            insight = nacti_insight(db, os.environ["KAUFLAND_CLIENT_KEY"], os.environ["KAUFLAND_SECRET_KEY"], eany)
+            print(f"Assortment Insight: údaje pro {len(insight)} z {len(eany)} EAN")
+        except Exception as e:
+            print(f"! Assortment Insight se nepodařilo načíst: {e}", file=sys.stderr)
+    param = Parametry()
+    if not param.najdi_sloupec(dalsi):
+        print("! Ve vstupu není sloupec s nákupní cenou (např. 'nákupní cena') – zisk a marže se nespočítají. "
+              f"Sloupce ve vstupu: {', '.join(dalsi) or '(žádné)'}. Název lze nastavit v .env: SLOUPEC_NAKUP=…",
+              file=sys.stderr)
     pred = db.predchozi_beh(beh)
     vystup = a.vystup or os.path.join(ADRESAR, f"ceny_{beh}.xlsx")
-    export_xlsx(vystup, vstup, dalsi, list(adaptery), db.vysledky(beh), db.vysledky(pred) if pred else {}, kurzy)
+    export_xlsx(vystup, vstup, dalsi, list(adaptery), db.vysledky(beh), db.vysledky(pred) if pred else {},
+                kurzy, insight, param)
     print(f"Hotovo: {vystup}" + (f" (porovnáno s během {pred})" if pred else ""))
 
 
