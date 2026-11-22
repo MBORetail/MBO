@@ -516,6 +516,8 @@ def main():
     ap.add_argument("--znovu", action="store_true", help="nenavazovat, dotázat se znovu na vše")
     ap.add_argument("--vystup", help="cesta k výstupnímu XLSX (výchozí ceny_<beh>.xlsx)")
     ap.add_argument("--debug", action="store_true", help="ukládat surové odpovědi API do debug/")
+    ap.add_argument("--jen-export", action="store_true",
+                    help="nic nedotazovat, jen vytvořit Excel z už uložených výsledků běhu")
     ap.add_argument("--bez-insight", action="store_true", help="nestahovat Kaufland Assortment Insight")
     a = ap.parse_args()
 
@@ -557,8 +559,12 @@ def main():
                 print(f"  {k:12} {i}/{n}  nalezeno {pocty[k][0]}, bez ceny {pocty[k][1]}{extra}")
 
     # každý marketplace ve vlastním vlákně – pomalý web nezdržuje ostatní
+    if a.jen_export:
+        adaptery_k_dotazu = {}
+    else:
+        adaptery_k_dotazu = adaptery
     with ThreadPoolExecutor(max_workers=max(1, len(adaptery))) as ex:
-        list(ex.map(lambda ad: zpracuj_marketplace(ad, eany, beh, db, a.znovu, prubeh), adaptery.values()))
+        list(ex.map(lambda ad: zpracuj_marketplace(ad, eany, beh, db, a.znovu, prubeh), adaptery_k_dotazu.values()))
 
     kurzy = kurzy_cnb(db)
     insight = {}
