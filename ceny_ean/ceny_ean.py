@@ -362,7 +362,11 @@ def export_xlsx(cesta, vstup, dalsi_sloupce, klice, vys, predchozi, kurzy):
 
 def tisk_jednoho(ean, adaptery):
     for k, a in adaptery.items():
-        v = a.hledej(ean)
+        try:
+            v = a.hledej(ean)
+        except Exception as e:
+            print(f"{k:12} CHYBA: {e}")
+            continue
         n = v.nejlevnejsi
         if n:
             dop = "?" if n.doprava is None else f"{n.doprava:.2f}"

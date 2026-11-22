@@ -13,14 +13,18 @@ TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 
+class ChybaPrihlaseni(Exception):
+    pass
+
+
 class EbayDE(Adapter):
     klic = "ebay_de"
     pauza = 0.3
 
     def __init__(self, client_id, client_secret, **kw):
         super().__init__(**kw)
-        self.client_id = client_id
-        self.client_secret = client_secret
+        self.client_id = client_id.strip()
+        self.client_secret = client_secret.strip()
         self._token = None
         self._token_do = 0.0
 
@@ -36,7 +40,18 @@ class EbayDE(Adapter):
                   "scope": "https://api.ebay.com/oauth/api_scope"},
             timeout=30,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            try:
+                popis = r.json().get("error_description") or r.json().get("error") or ""
+            except ValueError:
+                popis = r.text[:200]
+            rada = ""
+            if "SBX" in self.client_id.upper():
+                rada = " Používáte SANDBOX klíče (obsahují SBX) – potřebujete klíče ze sloupce Production."
+            elif r.status_code == 401:
+                rada = (" Zkontrolujte, že EBAY_CLIENT_ID je App ID a EBAY_CLIENT_SECRET je Cert ID z produkčního"
+                        " keysetu a že je u keysetu vyřízený krok Marketplace Account Deletion (výjimka).")
+            raise ChybaPrihlaseni(f"eBay odmítl přihlášení (HTTP {r.status_code}: {popis}).{rada}")
         d = r.json()
         self._token = d["access_token"]
         self._token_do = time.time() + int(d.get("expires_in", 7200))
