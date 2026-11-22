@@ -80,12 +80,7 @@ def vytvor_adaptery(klice, debug_dir):
 
 
 # --- vstup -------------------------------------------------------------------
-def ean_platny(ean):
-    if not ean.isdigit() or len(ean) not in (8, 12, 13, 14):
-        return False
-    cisla = [int(c) for c in ean]
-    soucet = sum(c * (3 if i % 2 == 0 else 1) for i, c in enumerate(reversed(cisla[:-1])))
-    return (10 - soucet % 10) % 10 == cisla[-1]
+from mp.base import ean_platny  # noqa: E402
 
 
 def normalizuj_ean(v):
@@ -538,8 +533,8 @@ def main():
         sys.exit("Ve vstupu nejsou žádné EAN.")
     spatne = [z["ean"] for z in vstup if not ean_platny(z["ean"])]
     if spatne:
-        print(f"! {len(spatne)} EAN má neplatný kontrolní součet (dotáži se i tak), "
-              f"např. {', '.join(spatne[:5])}", file=sys.stderr)
+        print(f"! {len(spatne)} EAN má neplatnou kontrolní číslici – Kaufland je přeskočí, eBay je zkusí "
+              f"hledat jako text. Např.: {', '.join(spatne[:5])}", file=sys.stderr)
 
     iso = dt.date.today().isocalendar()
     beh = a.beh or f"{iso[0]}-W{iso[1]:02d}"

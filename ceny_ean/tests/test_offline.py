@@ -319,3 +319,19 @@ class TestInsight(unittest.TestCase):
             with mock.patch("requests.Session.request") as req:        # podruhé z cache
                 nacti_insight(db, "k", "s", ["4006381333931"], prubeh=lambda *a: None)
             req.assert_not_called()
+
+
+class TestNeplatnyEan(unittest.TestCase):
+    def test_kaufland_neposila_neplatny_ean(self):
+        a = Kaufland("de", "k" * 32, "s" * 64)
+        with mock.patch.object(a.session, "request") as req:
+            v = a.hledej("6291534659159")
+        req.assert_not_called()
+        self.assertEqual(v.status, "nenalezeno")
+        self.assertIn("neplatný EAN", v.zprava)
+
+    def test_kaufland_400_invalid(self):
+        a = Kaufland("de", "k" * 32, "s" * 64)
+        with mock.patch.object(a.session, "request", return_value=Odpoved(400, {"message": "Invalid EAN"})):
+            v = a.hledej("6291534659152")
+        self.assertEqual(v.status, "nenalezeno")

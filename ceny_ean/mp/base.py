@@ -107,6 +107,15 @@ class Adapter:
         raise NotImplementedError
 
 
+def ean_platny(ean: str) -> bool:
+    """Kontrolní číslice EAN-8 / UPC-12 / EAN-13 / GTIN-14."""
+    if not ean.isdigit() or len(ean) not in (8, 12, 13, 14):
+        return False
+    cisla = [int(c) for c in ean]
+    soucet = sum(c * (3 if i % 2 == 0 else 1) for i, c in enumerate(reversed(cisla[:-1])))
+    return (10 - soucet % 10) % 10 == cisla[-1]
+
+
 def cislo(v) -> Optional[float]:
     if v is None or v == "":
         return None

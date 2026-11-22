@@ -23,7 +23,7 @@ import json
 import time
 from urllib.parse import urlencode
 
-from .base import Adapter, Nabidka, Vysledek, cislo
+from .base import Adapter, Nabidka, Vysledek, cislo, ean_platny
 
 BASE = "https://sellerapi.kaufland.com/v2"
 MENA = {"de": "EUR", "cz": "CZK", "sk": "EUR", "pl": "PLN", "at": "EUR"}
@@ -59,6 +59,8 @@ class Kaufland(Adapter):
         return r
 
     def hledej(self, ean):
+        if not ean_platny(ean):   # Kaufland vrací 400 "Invalid EAN" – zbytečný dotaz
+            return Vysledek("nenalezeno", zprava="neplatný EAN (chybná kontrolní číslice)")
         # /buybox naostro vrací 404, proto jen jeden dotaz na EAN
         pokusy = [
             (f"/products/ean/{ean}", {"storefront": self.storefront, "embedded": "units"}),
@@ -69,6 +71,8 @@ class Kaufland(Adapter):
             if r.status_code == 404:
                 posledni_chyba = f"{cesta}: 404"
                 continue
+            if r.status_code == 400 and "invalid" in r.text.lower():
+                return Vysledek("nenalezeno", zprava=f"Kaufland odmítl EAN: {r.text[:120]}")
             if r.status_code != 200:
                 posledni_chyba = f"{cesta}: HTTP {r.status_code}: {r.text[:200]}"
                 if r.status_code in (401, 403):
