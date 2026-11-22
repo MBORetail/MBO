@@ -57,8 +57,8 @@ class EbayDE(Adapter):
         self._token_do = time.time() + int(d.get("expires_in", 7200))
         return self._token
 
-    def hledej(self, ean):
-        r = self.pozadavek(
+    def _hledej(self, **dotaz):
+        return self.pozadavek(
             "GET", SEARCH_URL,
             headers={
                 "Authorization": f"Bearer {self.token()}",
@@ -67,19 +67,30 @@ class EbayDE(Adapter):
                 "Accept-Language": "de-DE",
             },
             params={
-                "gtin": ean,
+                **dotaz,
                 "filter": "conditions:{NEW},buyingOptions:{FIXED_PRICE},deliveryCountry:DE",
                 "sort": "price",
                 "limit": 50,
             },
         )
-        if r.status_code == 401:
-            self._token = None
-        if r.status_code != 200:
-            return Vysledek("chyba", zprava=f"HTTP {r.status_code}: {r.text[:200]}")
-        d = r.json()
-        self.uloz_debug(ean, d)
-        return Vysledek("ok", self.parsuj(d)) if d.get("itemSummaries") else Vysledek("nenalezeno")
+
+    def hledej(self, ean):
+        # 1) přesně podle katalogového GTIN, 2) EAN jako hledaný text (nabídky mimo katalog eBay)
+        for dotaz in ({"gtin": ean}, {"q": ean}):
+            r = self._hledej(**dotaz)
+            if r.status_code == 401:
+                self._token = None
+            if r.status_code != 200:
+                return Vysledek("chyba", zprava=f"HTTP {r.status_code}: {r.text[:200]}")
+            d = r.json()
+            self.uloz_debug(ean, {"dotaz": dotaz, "odpoved": d})
+            if d.get("itemSummaries"):
+                nabidky = self.parsuj(d)
+                if nabidky:
+                    return Vysledek("ok", nabidky)
+                return Vysledek("nenalezeno", zprava="jen vlastní nabídky",
+                                titul=d["itemSummaries"][0].get("title", ""))
+        return Vysledek("nenalezeno")
 
     def parsuj(self, d):
         out = []

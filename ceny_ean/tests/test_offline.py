@@ -77,8 +77,20 @@ class TestEbay(unittest.TestCase):
     def test_nenalezeno(self):
         a = EbayDE("id", "secret")
         a._token, a._token_do = "T", 1e12
-        with mock.patch.object(a.session, "request", return_value=Odpoved(200, {"total": 0})):
+        with mock.patch.object(a.session, "request", return_value=Odpoved(200, {"total": 0})) as req:
             self.assertEqual(a.hledej("4006381333931").status, "nenalezeno")
+        self.assertEqual(req.call_args_list[0].kwargs["params"]["gtin"], "4006381333931")
+        self.assertEqual(req.call_args_list[1].kwargs["params"]["q"], "4006381333931")
+
+    def test_zaloha_hledanim_textu(self):
+        a = EbayDE("id", "secret")
+        a._token, a._token_do = "T", 1e12
+        nalez = {"itemSummaries": [{"title": "Afnan 9PM Elixir", "price": {"value": "30.00", "currency": "EUR"},
+                                    "shippingOptions": [{"shippingCost": {"value": "0.00"}}],
+                                    "seller": {"username": "s"}, "itemWebUrl": "u"}]}
+        with mock.patch.object(a.session, "request", side_effect=[Odpoved(200, {"total": 0}), Odpoved(200, nalez)]):
+            v = a.hledej("6290171075738")
+        self.assertEqual((v.status, v.nejlevnejsi.celkem), ("ok", 30.0))
 
 
 class TestKaufland(unittest.TestCase):
