@@ -225,6 +225,10 @@ def zpracuj_marketplace(adapter, eany, beh, db, znovu, prubeh):
         except Exception as e:  # jeden špatný EAN nesmí shodit dávku
             from mp import Vysledek
             vys = Vysledek("chyba", zprava=f"{type(e).__name__}: {e}"[:300])
+        if getattr(adapter, "vycerpano", False):
+            print(f"! {adapter.klic}: denní limit API je vyčerpaný – zbývá {len(fronta) - i + 1} EAN. "
+                  f"Spusťte stejný příkaz zítra, doplní se jen chybějící.", file=sys.stderr)
+            break
         db.uloz(beh, ean, adapter.klic, vys)
         prubeh(adapter.klic, i, len(fronta), ean, vys)
     return len(fronta)

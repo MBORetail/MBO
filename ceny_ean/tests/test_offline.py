@@ -335,3 +335,19 @@ class TestNeplatnyEan(unittest.TestCase):
         with mock.patch.object(a.session, "request", return_value=Odpoved(400, {"message": "Invalid EAN"})):
             v = a.hledej("6291534659152")
         self.assertEqual(v.status, "nenalezeno")
+
+
+class TestEbayLimit(unittest.TestCase):
+    def test_429_zastavi_ebay_bez_opakovani(self):
+        a = EbayDE("id", "secret")
+        a._token, a._token_do = "T", 1e12
+        ok = {"itemSummaries": [{"title": "x", "price": {"value": "10"}, "seller": {"username": "s"},
+                                 "shippingOptions": [{"shippingCost": {"value": "0"}}], "itemWebUrl": "u"}]}
+        odp = [Odpoved(200, ok), Odpoved(429, {"errors": [{"errorId": 2001}]})]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+            with mock.patch.object(a.session, "request", side_effect=odp) as req, \
+                    mock.patch("sys.stderr"):
+                ce.zpracuj_marketplace(a, ["1", "2", "3", "4"], "b", db, False, lambda *x: None)
+            self.assertEqual(req.call_count, 2)                    # žádné opakování po 429
+            self.assertEqual(db.hotove("b", "ebay_de"), {"1"})     # zbytek zůstane na příště

@@ -13,6 +13,9 @@ TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 
+LIMIT = "denní limit eBay API vyčerpán – dotáže se při dalším spuštění"
+
+
 class ChybaPrihlaseni(Exception):
     pass
 
@@ -59,7 +62,7 @@ class EbayDE(Adapter):
 
     def _hledej(self, **dotaz):
         return self.pozadavek(
-            "GET", SEARCH_URL,
+            "GET", SEARCH_URL, opakovat_429=False,   # 429 u eBay = vyčerpaný denní limit, opakování ho jen pálí
             headers={
                 "Authorization": f"Bearer {self.token()}",
                 "X-EBAY-C-MARKETPLACE-ID": "EBAY_DE",
@@ -76,8 +79,13 @@ class EbayDE(Adapter):
 
     def hledej(self, ean):
         # 1) přesně podle katalogového GTIN, 2) EAN jako hledaný text (nabídky mimo katalog eBay)
+        if self.vycerpano:
+            return Vysledek("chyba", zprava=LIMIT)
         for dotaz in ({"gtin": ean}, {"q": ean}):
             r = self._hledej(**dotaz)
+            if r.status_code == 429:
+                self.vycerpano = True
+                return Vysledek("chyba", zprava=LIMIT)
             if r.status_code == 401:
                 self._token = None
             if r.status_code != 200:

@@ -82,7 +82,9 @@ class Adapter:
         with open(os.path.join(self.debug_dir, f"{self.klic}_{ean}.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def pozadavek(self, metoda, url, pokusy=4, **kw):
+    vycerpano = False   # True = denní limit API vyčerpán, další dotazy nemají smysl
+
+    def pozadavek(self, metoda, url, pokusy=4, opakovat_429=True, **kw):
         """HTTP s opakováním při 429/5xx a výpadku spojení."""
         kw.setdefault("timeout", 30)
         for pokus in range(pokusy):
@@ -94,6 +96,8 @@ class Adapter:
                     raise
                 time.sleep(2 ** pokus * 2)
                 continue
+            if r.status_code == 429 and not opakovat_429:
+                return r
             if r.status_code == 429 or r.status_code >= 500:
                 if pokus == pokusy - 1:
                     return r
