@@ -186,47 +186,114 @@ class TestPrehled(unittest.TestCase):
             from openpyxl import load_workbook
             ws = load_workbook(out)["Přehled"]
             rows = [[c.value for c in r] for r in ws.iter_rows()]
-            self.assertEqual(rows[0][:4], ["EAN", "Název produktu", "Kaufland.de cena", "Kaufland.de doprava"])
-            self.assertEqual(rows[1], ["1", "Parfum X", 34, 0, 34, "EUR", 34, "Shop"])
-            self.assertEqual(rows[2][:3], ["2", "Parfum Y", "nenalezeno"])
+            self.assertEqual(rows[0][:5], ["EAN", "Název produktu", "Kategorie (provize)", "Kaufland.de cena", "Kaufland.de doprava"])
+            self.assertEqual(rows[1], ["1", "Parfum X", "parfém (název)", 34, 0, 34, "EUR", 34, "Shop"])
+            self.assertEqual(rows[2][:4], ["2", "Parfum Y", "parfém (název)", "nenalezeno"])
 
 
 class TestZisk(unittest.TestCase):
-    def test_zisk_marze_a_insight(self):
+    def setUp(self):
         import zisk
-        with mock.patch.dict(os.environ, {"NAKUP_MENA": "CZK", "PROVIZE_KAUFLAND_CZ": "12"}, clear=False):
-            for k in ("NAKUP_S_DPH", "SLOUPEC_NAKUP", "DOPRAVA_CZ", "FIX_KAUFLAND_CZ", "DPH_CZ"):
-                os.environ.pop(k, None)
-            param = zisk.Parametry()
+        self.zisk = zisk
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("PROVIZE_", "FIX_", "DPH_", "DOPRAVA_", "NAKUP_", "SLOUPEC_"))}
+        env["NAKUP_MENA"] = "CZK"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.param = zisk.Parametry()
+
+    def test_kategorie(self):
+        u = self.zisk.urci_kategorii
+        self.assertEqual(u(None, None, "Afnan 9PM Elixir Parfum Intense Spray")[0], "parfem")
+        self.assertEqual(u(None, None, "Lattafa Asad EDP 100 ml")[0], "parfem")
+        self.assertEqual(u(None, None, "Nivea Creme 150 ml")[0], "kosmetika")
+        self.assertEqual(u("Parfémy", None, "Nivea Creme")[0], "parfem")         # vstup má přednost
+        self.assertEqual(u("kosmetika", None, "Dior Eau de Parfum")[0], "kosmetika")
+        self.assertEqual(self.param.provize("kaufland_cz", "parfem"), 10.0)
+        self.assertEqual(self.param.provize("kaufland_de", "kosmetika"), 13.0)
+        self.assertEqual(self.param.provize("ebay_de", "parfem"), 11.0)
+        self.assertEqual(self.param.provize("ebay_de", "kosmetika"), 12.0)
+
+    def _vystup(self, tmp):
+        db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
+        kc = FalesnyAdapter("kaufland_cz", {"4006381333931": (300.0, 79.0, "CZK"), "96385074": (500.0, 0.0, "CZK")})
+        eb = FalesnyAdapter("ebay_de", {"4006381333931": (20.0, 0.0, "EUR")})
+        for a in (eb, kc):
+            ce.zpracuj_marketplace(a, ["4006381333931", "96385074"], "b", db, False, lambda *a: None)
+        out = os.path.join(tmp, "o.xlsx")
+        insight = {"4006381333931": {"sales_rank": 120, "kaufland_bestseller": True, "category": "Parfum",
+                                     "external_demand_indicator": "High", "buybox_price_current": 1599,
+                                     "buybox_price_l_30_day": 1650, "buybox_price_l_90_day": None}}
+        vstup = [{"ean": "4006381333931", "Nákupní cena": "200"}, {"ean": "96385074", "Nákupní cena": "250"}]
+        ce.export_xlsx(out, vstup, ["Nákupní cena"], ["ebay_de", "kaufland_cz"], db.vysledky("b"), {},
+                       {"CZK": 1.0, "EUR": 25.0}, insight, self.param)
+        return out
+
+    def test_zisk_marze_a_insight(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = ce.Databaze(os.path.join(tmp, "t.sqlite"))
-            kc = FalesnyAdapter("kaufland_cz", {"4006381333931": (300.0, 79.0, "CZK")})
-            ce.zpracuj_marketplace(kc, ["4006381333931"], "b", db, False, lambda *a: None)
-            out = os.path.join(tmp, "o.xlsx")
-            insight = {"4006381333931": {"sales_rank": 120, "kaufland_bestseller": True,
-                                         "external_demand_indicator": "High", "buybox_price_current": 1599,
-                                         "buybox_price_l_30_day": 1650, "buybox_price_l_90_day": None}}
-            ce.export_xlsx(out, [{"ean": "4006381333931", "Nákupní cena": "200"}], ["Nákupní cena"],
-                           ["kaufland_cz"], db.vysledky("b"), {}, {"CZK": 1.0, "EUR": 25.0}, insight, param)
             from openpyxl import load_workbook
-            wb = load_workbook(out)
+            wb = load_workbook(self._vystup(tmp))
             ws = wb["Přehled"]
             h = [c.value for c in ws[1]]
             r = dict(zip(h, [c.value for c in ws[2]]))
+            self.assertTrue(r["Kategorie (provize)"].startswith("parfém"))       # z kategorie Kauflandu
             self.assertEqual(r["Nákupní cena bez DPH EUR"], 8.0)
             self.assertEqual(r["Kaufland.cz celkem EUR"], 15.16)
-            # 15.16/1.21 = 12.529 ; poplatek 12 % z 15.16 = 1.819 ; 12.529 − 1.819 − 8 = 2.71
-            self.assertEqual(r["Kaufland.cz zisk EUR"], 2.71)
-            self.assertEqual(r["Kaufland.cz marže %"], 21.6)
+            self.assertEqual(r["Kaufland.cz provize %"], 10.0)
+            # 15.16/1.21 = 12.529 ; provize 10 % z 15.16 = 1.516 ; 12.529 − 1.516 − 8 = 3.01
+            self.assertEqual(r["Kaufland.cz zisk/ks EUR"], 3.01)
+            self.assertEqual(r["Kaufland.cz marže %"], 24.0)   # 3.013 / 12.529
+            # eBay: 20/1.19 = 16.807 ; 11 % z 20 = 2.2 ; fix 0.35 ; 16.807 − 2.2 − 0.35 − 8 = 6.26
+            self.assertEqual(r["eBay.de zisk/ks EUR"], 6.26)
             self.assertEqual(r["Kaufland pořadí prodejnosti"], 120)
-            self.assertEqual(r["Kaufland bestseller"], "ano")
             self.assertEqual(r["Buy Box aktuálně EUR"], 15.99)
+            self.assertTrue(str(r["Očekávaný zisk celkem EUR"]).startswith("=SUM("))
+            self.assertEqual(ws.cell(4, 1).value, "CELKEM")
             self.assertIn("Parametry výpočtu", wb.sheetnames)
 
+    @unittest.skipUnless(__import__("shutil").which("soffice"), "LibreOffice není k dispozici")
+    def test_vzorce_objednavky_v_libreoffice(self):
+        import shutil
+        import subprocess
+        from openpyxl import load_workbook
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._vystup(tmp)
+            wb = load_workbook(out)
+            ws = wb["Přehled"]
+            h = [c.value for c in ws[1]]
+            col = {n: i + 1 for i, n in enumerate(h)}
+            ws.cell(2, col["eBay.de OBJEDNAT ks"], 10)       # 10 ks na eBay
+            ws.cell(2, col["Kaufland.cz OBJEDNAT ks"], 5)    # 5 ks na Kaufland.cz
+            ws.cell(3, col["Kaufland.cz OBJEDNAT ks"], 2)    # druhý produkt 2 ks
+            wb.save(out)
+            profil = os.path.join(tmp, "lo")
+            subprocess.run(["soffice", f"-env:UserInstallation=file://{profil}", "--headless", "--convert-to",
+                            "xlsx:Calc MS Excel 2007 XML", "--outdir", os.path.join(tmp, "p"), out],
+                           check=True, capture_output=True, timeout=180)
+            ws = load_workbook(os.path.join(tmp, "p", "o.xlsx"), data_only=True)["Přehled"]
+            r2 = {n: ws.cell(2, c).value for n, c in col.items()}
+            r3 = {n: ws.cell(3, c).value for n, c in col.items()}
+            tot = {n: ws.cell(4, c).value for n, c in col.items()}
+            self.assertAlmostEqual(r2["eBay.de nákup celkem EUR"], 80.0)
+            self.assertAlmostEqual(r2["eBay.de zisk celkem EUR"], 62.6)
+            self.assertAlmostEqual(r2["Kaufland.cz zisk celkem EUR"], 15.05)
+            self.assertEqual(r2["Objednat celkem ks"], 15)
+            self.assertAlmostEqual(r2["Nákup celkem EUR"], 120.0)
+            self.assertAlmostEqual(r2["Očekávaný zisk celkem EUR"], 77.65)
+            # marže objednávky = 77.65 / (10×16.81 + 5×12.53) = 77.65 / 230.75
+            self.assertAlmostEqual(r2["Očekávaná marže %"], round(77.65 / 230.75 * 100, 1))
+            # druhý produkt: jen Kaufland.cz, eBay nenalezeno -> prázdné buňky, nic nespadne
+            self.assertEqual(r3["eBay.de nákup celkem EUR"] in (None, ""), True)
+            self.assertEqual(r3["Objednat celkem ks"], 2)
+            self.assertEqual(tot["Objednat celkem ks"], 17)
+            self.assertAlmostEqual(tot["Nákup celkem EUR"], 120.0 + 2 * 10.0)
+            zisk3 = r3["Očekávaný zisk celkem EUR"]
+            self.assertAlmostEqual(tot["Očekávaný zisk celkem EUR"], 77.65 + zisk3)
+            self.assertIsInstance(tot["Očekávaná marže %"], (int, float))
+            shutil.rmtree(profil, ignore_errors=True)
+
     def test_nakup_s_dph(self):
-        import zisk
         with mock.patch.dict(os.environ, {"NAKUP_MENA": "EUR", "NAKUP_S_DPH": "ano", "DPH_NAKUP": "21"}):
-            p = zisk.Parametry()
+            p = self.zisk.Parametry()
         self.assertEqual(round(p.nakup_eur("12,10", {"CZK": 1, "EUR": 25}), 2), 10.0)
         self.assertEqual(p.spocti("ebay_de", None, 10), (None, None))
 

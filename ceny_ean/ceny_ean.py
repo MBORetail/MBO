@@ -240,79 +240,146 @@ NAZVY_MP = {"ebay_de": "eBay.de", "kaufland_de": "Kaufland.de", "kaufland_cz": "
 
 
 def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_sloupce=()):
-    """První list: EAN, název, nákupní cena, pro každý web cena / doprava / celkem / zisk / marže,
-    a údaje z Kaufland Assortment Insight."""
+    """První list: EAN, název, kategorie, nákupní cena; pro každý web cena, zisk, marže
+    a sloupec "objednat ks" se vzorci pro nákup a zisk za objednané množství; souhrn objednávky;
+    údaje z Kaufland Assortment Insight."""
     from openpyxl.styles import Font, PatternFill
-    from openpyxl.utils import get_column_letter
+    from openpyxl.utils import get_column_letter as L
+    from zisk import urci_kategorii
     kurzy = kurzy or {}
     insight = insight or {}
     sl_nakup = param.najdi_sloupec(dalsi_sloupce) if param else None
+    sl_kat = param.najdi_sloupec_kategorie(dalsi_sloupce) if param else None
+    objednavka = bool(sl_nakup)
 
-    ws = wb.create_sheet("Přehled", 0)
-    hlavicka = ["EAN", "Název produktu"]
-    if sl_nakup:
-        hlavicka += ["Nákupní cena bez DPH EUR"]
+    # --- rozvržení sloupců ---
+    hlavicka = ["EAN", "Název produktu", "Kategorie (provize)"]
+    if objednavka:
+        hlavicka.append("Nákupní cena bez DPH EUR")
+    c_nakup = len(hlavicka) if objednavka else None
+    sloupce = {}   # mp -> {nazev_pole: index sloupce (1-based)}
     for k in klice:
         m = NAZVY_MP.get(k, k)
-        hlavicka += [f"{m} cena", f"{m} doprava", f"{m} celkem", f"{m} měna", f"{m} celkem EUR"]
-        if sl_nakup:
-            hlavicka += [f"{m} zisk EUR", f"{m} marže %"]
-        hlavicka += [f"{m} prodejce"]
+        pole = ["cena", "doprava", "celkem", "měna", "celkem EUR"]
+        if objednavka:
+            pole += ["tržba bez DPH EUR", "provize %", "zisk/ks EUR", "marže %"]
+        pole += ["prodejce"]
+        if objednavka:
+            pole += ["OBJEDNAT ks", "nákup celkem EUR", "zisk celkem EUR"]
+        sloupce[k] = {}
+        for p_ in pole:
+            hlavicka.append(f"{m} {p_}")
+            sloupce[k][p_] = len(hlavicka)
+    souhrn = {}
+    if objednavka:
+        for p_ in ("Objednat celkem ks", "Nákup celkem EUR", "Očekávaný zisk celkem EUR", "Očekávaná marže %"):
+            hlavicka.append(p_)
+            souhrn[p_] = len(hlavicka)
     s_insight = bool(insight)
     if s_insight:
         hlavicka += ["Kaufland pořadí prodejnosti", "Kaufland bestseller", "Poptávka mimo Kaufland",
                      "Buy Box aktuálně EUR", "Buy Box Ø 30 dní EUR", "Buy Box Ø 90 dní EUR"]
+
+    ws = wb.create_sheet("Přehled", 0)
     ws.append(hlavicka)
+    modra, zluta = PatternFill("solid", fgColor="DDEBF7"), PatternFill("solid", fgColor="FFF2CC")
     for c in ws[1]:
         c.font = Font(bold=True)
-        c.fill = PatternFill("solid", fgColor="DDEBF7")
+        c.fill = modra
+    for k in klice:
+        if "OBJEDNAT ks" in sloupce[k]:
+            ws.cell(1, sloupce[k]["OBJEDNAT ks"]).fill = zluta
     cervena = Font(color="C00000")
 
     for z in vstup:
         ean = z["ean"]
+        r = ws.max_row + 1
         ins = insight.get(ean) or {}
         nazev = next((vys[(ean, k)]["titul"] for k in klice
                       if vys.get((ean, k)) and vys[(ean, k)]["titul"]), "") or (ins.get("item_name") or "")
         if not nazev:   # název ze vstupního souboru, pokud tam je
             nazev = next((str(v) for h, v in z.items()
                           if h.lower() in ("nazev", "název", "name", "produkt", "popis") and v), "")
-        radek = [ean, nazev]
+        kat, zdroj = urci_kategorii(z.get(sl_kat) if sl_kat else None, ins.get("category"), nazev)
+        radek = {1: ean, 2: nazev, 3: f"{'parfém' if kat == 'parfem' else 'kosmetika'} ({zdroj})"}
         nakup = None
-        if sl_nakup:
+        if objednavka:
             nakup = param.nakup_eur(z.get(sl_nakup), kurzy)
-            radek.append(round(nakup, 2) if nakup is not None else None)
+            radek[c_nakup] = round(nakup, 2) if nakup is not None else None
         zaporne = []
         for k in klice:
+            sl = sloupce[k]
             v = vys.get((ean, k))
             if v and v["status"] == "ok":
                 castka = v["celkem"] if v["celkem"] is not None else v["cena"]
                 eur = prevod(castka, v["mena"], "EUR", kurzy)
-                radek += [v["cena"], v["doprava"], v["celkem"], v["mena"], eur]
-                if sl_nakup:
-                    zisk, marze = param.spocti(k, eur, nakup)
+                radek.update({sl["cena"]: v["cena"], sl["doprava"]: v["doprava"], sl["celkem"]: v["celkem"],
+                              sl["měna"]: v["mena"], sl["celkem EUR"]: eur, sl["prodejce"]: v["prodejce"]})
+                if objednavka:
+                    zisk, marze = param.spocti(k, eur, nakup, kat)
+                    radek.update({sl["tržba bez DPH EUR"]: param.trzba(k, eur),
+                                  sl["provize %"]: param.provize(k, kat),
+                                  sl["zisk/ks EUR"]: zisk, sl["marže %"]: marze})
                     if zisk is not None and zisk < 0:
-                        zaporne += [len(radek) + 1, len(radek) + 2]
-                    radek += [zisk, marze]
-                radek += [v["prodejce"]]
+                        zaporne += [sl["zisk/ks EUR"], sl["marže %"]]
             else:
-                stav = v["status"] if v else ""
-                radek += [stav, None, None, None, None] + ([None, None] if sl_nakup else []) + [None]
+                radek[sl["cena"]] = v["status"] if v else ""
+            if objednavka:
+                ks = f"{L(sl['OBJEDNAT ks'])}{r}"
+                radek[sl["nákup celkem EUR"]] = f'=IF(AND(N({ks})>0,ISNUMBER({L(c_nakup)}{r})),{ks}*{L(c_nakup)}{r},"")'
+                radek[sl["zisk celkem EUR"]] = f'=IF(AND(N({ks})>0,ISNUMBER({L(sl["zisk/ks EUR"])}{r})),{ks}*{L(sl["zisk/ks EUR"])}{r},"")'
+        if objednavka:
+            ks_bunky = [f"{L(sloupce[k]['OBJEDNAT ks'])}{r}" for k in klice]
+            nak = [f"{L(sloupce[k]['nákup celkem EUR'])}{r}" for k in klice]
+            zis = [f"{L(sloupce[k]['zisk celkem EUR'])}{r}" for k in klice]
+            trz = "+".join(f"N({L(sloupce[k]['OBJEDNAT ks'])}{r})*N({L(sloupce[k]['tržba bez DPH EUR'])}{r})" for k in klice)
+            radek[souhrn["Objednat celkem ks"]] = f"=SUM({','.join(ks_bunky)})"
+            radek[souhrn["Nákup celkem EUR"]] = f"=SUM({','.join(nak)})"
+            radek[souhrn["Očekávaný zisk celkem EUR"]] = f"=SUM({','.join(zis)})"
+            zc = f"{L(souhrn['Očekávaný zisk celkem EUR'])}{r}"
+            radek[souhrn["Očekávaná marže %"]] = f'=IF(({trz})>0,ROUND({zc}/({trz})*100,1),"")'
         if s_insight:
-            def eur(c):
+            def eur100(c):
                 return round(c / 100, 2) if isinstance(c, (int, float)) else None
-            radek += [ins.get("sales_rank"),
-                      {True: "ano", False: "ne"}.get(ins.get("kaufland_bestseller"), None),
-                      ins.get("external_demand_indicator"),
-                      eur(ins.get("buybox_price_current")), eur(ins.get("buybox_price_l_30_day")),
-                      eur(ins.get("buybox_price_l_90_day"))]
-        ws.append(radek)
+            base = len(hlavicka) - 5
+            for i, val in enumerate([ins.get("sales_rank"),
+                                     {True: "ano", False: "ne"}.get(ins.get("kaufland_bestseller")),
+                                     ins.get("external_demand_indicator"),
+                                     eur100(ins.get("buybox_price_current")),
+                                     eur100(ins.get("buybox_price_l_30_day")),
+                                     eur100(ins.get("buybox_price_l_90_day"))]):
+                radek[base + i] = val
+        for col, val in radek.items():
+            ws.cell(r, col, val)
         for col in zaporne:
-            ws.cell(ws.max_row, col).font = cervena
-    ws.freeze_panes = "C2"
+            ws.cell(r, col).font = cervena
+        for k in klice:
+            if objednavka:
+                ws.cell(r, sloupce[k]["OBJEDNAT ks"]).fill = zluta
+
+    # řádek součtů objednávky
+    if objednavka and vstup:
+        prvni, posledni, r = 2, ws.max_row, ws.max_row + 1
+        ws.cell(r, 1, "CELKEM").font = Font(bold=True)
+        sumy = [sloupce[k][p_] for k in klice for p_ in ("OBJEDNAT ks", "nákup celkem EUR", "zisk celkem EUR")]
+        sumy += [souhrn[p_] for p_ in ("Objednat celkem ks", "Nákup celkem EUR", "Očekávaný zisk celkem EUR")]
+        for col in sumy:
+            c = ws.cell(r, col, f"=SUM({L(col)}{prvni}:{L(col)}{posledni})")
+            c.font = Font(bold=True)
+        # SUMPRODUCT s oddělenými poli bere text/prázdné buňky jako 0
+        trz = "+".join(f"SUMPRODUCT({L(sloupce[k]['OBJEDNAT ks'])}{prvni}:{L(sloupce[k]['OBJEDNAT ks'])}{posledni},"
+                       f"{L(sloupce[k]['tržba bez DPH EUR'])}{prvni}:{L(sloupce[k]['tržba bez DPH EUR'])}{posledni})"
+                       for k in klice)
+        zc = f"{L(souhrn['Očekávaný zisk celkem EUR'])}{r}"
+        c = ws.cell(r, souhrn["Očekávaná marže %"], f'=IFERROR(ROUND({zc}/({trz})*100,1),"")')
+        c.font = Font(bold=True)
+
+    ws.freeze_panes = "D2"
     ws.column_dimensions["A"].width = 16
     ws.column_dimensions["B"].width = 50
-    for i in range(3, len(hlavicka) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 14
+    ws.column_dimensions["C"].width = 22
+    for i in range(4, len(hlavicka) + 1):
+        ws.column_dimensions[L(i)].width = 14
 
     if param:
         wp = wb.create_sheet("Parametry výpočtu", 1)
@@ -320,13 +387,18 @@ def prehled(wb, vstup, klice, vys, kurzy=None, insight=None, param=None, dalsi_s
         for c in wp[1]:
             c.font = Font(bold=True)
         wp.append(["Sloupec s nákupní cenou ve vstupu", sl_nakup or "NENALEZEN – zisk se nepočítá", "SLOUPEC_NAKUP"])
-        for r in param.radky_popisu():
-            wp.append(r)
+        wp.append(["Sloupec s kategorií ve vstupu", sl_kat or "není – kategorie z Kauflandu / názvu", ""])
+        for rr in param.radky_popisu():
+            wp.append(rr)
         wp.append([])
         for t in ("Prodejní cena = nejnižší cena konkurence vč. dopravy, přepočtená na EUR kurzem ČNB.",
-                  "Zisk = prodejní cena / (1 + DPH) − prodejní cena × provize % − fixní poplatek − nákup bez DPH − vaše doprava.",
-                  "Marže % = zisk / prodejní cena bez DPH.",
-                  "Hodnoty označené (výchozí) jsou odhady – upravte je v .env podle svých smluv a kategorií."):
+                  "Tržba bez DPH = prodejní cena / (1 + DPH země prodeje).",
+                  "Zisk/ks = tržba bez DPH − prodejní cena × provize % − fixní poplatek − nákup bez DPH − vaše doprava.",
+                  "Marže % = zisk / tržba bez DPH.",
+                  "Provize podle kategorie: parfém / kosmetika – určeno ze sloupce kategorie ve vstupu, "
+                  "jinak z kategorie Kauflandu, jinak podle názvu (Parfum, Eau de…, EDP, EDT…).",
+                  "Do žlutých sloupců OBJEDNAT ks zapište množství – nákup, zisk a marže za objednávku se přepočítají.",
+                  "Hodnoty označené (výchozí) nejsou nastavené v .env."):
             wp.append([t])
         wp.column_dimensions["A"].width = 70
         wp.column_dimensions["B"].width = 22

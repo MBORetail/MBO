@@ -18,20 +18,41 @@ VYCHOZI = {
     "DPH_DE": (19.0, "DPH Německo %"),
     "DPH_CZ": (21.0, "DPH Česko %"),
     "DPH_PL": (23.0, "DPH Polsko %"),
-    "PROVIZE_EBAY_DE": (12.0, "eBay.de provize % z ceny vč. dopravy – ODHAD, upravte podle kategorie"),
+    "PROVIZE_KAUFLAND_PARFEM": (10.0, "Kaufland (DE i CZ) provize % – parfémy"),
+    "PROVIZE_KAUFLAND_KOSMETIKA": (13.0, "Kaufland (DE i CZ) provize % – kosmetika"),
+    "PROVIZE_EBAY_PARFEM": (11.0, "eBay.de provize % – parfémy"),
+    "PROVIZE_EBAY_KOSMETIKA": (12.0, "eBay.de provize % – kosmetika"),
+    "PROVIZE_ALLEGRO_PARFEM": (10.0, "Allegro provize % – parfémy (ODHAD)"),
+    "PROVIZE_ALLEGRO_KOSMETIKA": (10.0, "Allegro provize % – kosmetika (ODHAD)"),
     "FIX_EBAY_DE": (0.35, "eBay.de fixní poplatek za objednávku EUR"),
-    "PROVIZE_KAUFLAND_DE": (12.0, "Kaufland.de provize % – ODHAD, upravte podle kategorie"),
     "FIX_KAUFLAND_DE": (0.0, "Kaufland.de fixní poplatek za položku EUR"),
-    "PROVIZE_KAUFLAND_CZ": (12.0, "Kaufland.cz provize % – ODHAD, upravte podle kategorie"),
     "FIX_KAUFLAND_CZ": (0.0, "Kaufland.cz fixní poplatek za položku EUR"),
-    "PROVIZE_ALLEGRO_PL": (10.0, "Allegro.pl provize % – ODHAD"),
     "FIX_ALLEGRO_PL": (0.0, "Allegro.pl fixní poplatek EUR"),
-    "PROVIZE_ALLEGRO_CZ": (10.0, "Allegro.cz provize % – ODHAD"),
     "FIX_ALLEGRO_CZ": (0.0, "Allegro.cz fixní poplatek EUR"),
     "DOPRAVA_DE": (0.0, "vaše náklady na dopravu 1 ks do DE, EUR"),
     "DOPRAVA_CZ": (0.0, "vaše náklady na dopravu 1 ks do CZ, EUR"),
     "DOPRAVA_PL": (0.0, "vaše náklady na dopravu 1 ks do PL, EUR"),
 }
+# Kategorie pro provize: "parfem" nebo "kosmetika".
+# Pořadí: sloupec "kategorie" ve vstupu > kategorie z Kaufland Assortment Insight > klíčová slova v názvu.
+SLOVA_PARFEM = ("parfum", "parfüm", "parfém", "perfum", "eau de", "edp", "edt", "cologne", "duft",
+                "fragrance", "extrait", "body mist", "körperspray", "deo parfum", "toaletní voda", "parfémová voda")
+NAZVY_SLOUPCE_KATEGORIE = ("kategorie", "category", "kategorie zbozi", "kategorie zboží", "typ")
+
+
+def urci_kategorii(vstup_hodnota=None, insight_kategorie=None, titul=None):
+    """Vrátí (kategorie, zdroj)."""
+    if vstup_hodnota and str(vstup_hodnota).strip():
+        v = str(vstup_hodnota).lower()
+        return ("parfem" if any(w in v for w in ("parf", "perf", "duft", "vůn", "vun")) else "kosmetika"), "vstup"
+    for text, zdroj in ((insight_kategorie, "Kaufland"), (titul, "název")):
+        if text:
+            t = " " + str(text).lower() + " "
+            if any(w in t for w in SLOVA_PARFEM):
+                return "parfem", zdroj
+    return "kosmetika", "výchozí"
+
+
 NAZVY_SLOUPCE_NAKUP = ("nakupni cena", "nákupní cena", "nakup", "nákup", "nakupni", "nákupní",
                        "nc", "purchase price", "einkaufspreis", "cost", "cena nakup", "cena nákup")
 
@@ -72,13 +93,26 @@ class Parametry:
             return None
         return c * kurzy[self.nakup_mena] / kurzy["EUR"]
 
-    def spocti(self, mp, prodej_eur, nakup_eur):
+    def najdi_sloupec_kategorie(self, dalsi_sloupce):
+        return next((s for s in dalsi_sloupce if s.strip().lower() in NAZVY_SLOUPCE_KATEGORIE), None)
+
+    def provize(self, mp, kategorie):
+        zaklad = mp.split("_")[0].upper()          # EBAY / KAUFLAND / ALLEGRO
+        return self.hodnoty.get(f"PROVIZE_{zaklad}_{kategorie.upper()}", 0.0)
+
+    def trzba(self, mp, prodej_eur):
+        if prodej_eur is None:
+            return None
+        dph = self.hodnoty.get(f"DPH_{mp.split('_')[1].upper()}", 0.0)
+        return round(prodej_eur / (1 + dph / 100), 2)
+
+    def spocti(self, mp, prodej_eur, nakup_eur, kategorie="kosmetika"):
         """Vrátí (zisk EUR, marže %) nebo (None, None)."""
         if prodej_eur is None or nakup_eur is None:
             return None, None
         zeme = mp.split("_")[1].upper()
         dph = self.hodnoty.get(f"DPH_{zeme}", 0.0)
-        provize = self.hodnoty.get(f"PROVIZE_{mp.upper()}", 0.0)
+        provize = self.provize(mp, kategorie)
         fix = self.hodnoty.get(f"FIX_{mp.upper()}", 0.0)
         doprava = self.hodnoty.get(f"DOPRAVA_{zeme}", 0.0)
         trzba = prodej_eur / (1 + dph / 100)
