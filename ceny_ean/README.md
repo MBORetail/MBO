@@ -26,6 +26,7 @@ python ceny_ean.py eany.xlsx --jen ebay_de        # jen vybrané weby
 python ceny_ean.py 4006381333931                  # jeden EAN do terminálu
 python ceny_ean.py eany.csv --debug               # surové odpovědi API do debug/
 python ceny_ean.py eany.csv --jen-export          # jen Excel z uložených výsledků, bez dotazů
+python ceny_ean.py cenik.xlsx --ean-sloupec A --nakup-sloupec E   # sloupce zadané písmenem
 ```
 
 * Vstup: CSV (`,` `;` nebo tab) nebo XLSX. EAN ze sloupce `ean`, jinak z prvního sloupce. Další sloupce se přenesou do výstupu.

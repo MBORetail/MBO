@@ -529,3 +529,34 @@ class TestAmazon(unittest.TestCase):
             self.assertEqual(db.vysledky("b")[("1", "ebay_de")]["extra"], {})
             db.uloz("b", "2", "ebay_de", Vysledek("nenalezeno"))
             self.assertEqual(len(db.vysledky("b")), 2)
+
+
+class TestSloupcePismenem(unittest.TestCase):
+    def test_ean_a_nakup_podle_pismen(self):
+        from openpyxl import Workbook
+        import zisk
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "bjutip.xlsx")
+            wb = Workbook()
+            wb.active.append(["Kód", "Značka", "Popis", "Ks", "Cena", "Kód2 EAN"])   # EAN v A, ale jiný sloupec má "EAN" v názvu
+            wb.active.append([6290171075738, "Afnan", "9PM EDP", 5, "12,50", "x"])
+            wb.active.append([4006381333931, "Stabilo", "Pen", 0, 1.2, "y"])
+            wb.save(src)
+            vstup, dalsi, hl = ce.nacti_vstup(src, "A", vrat_hlavicku=True)
+            self.assertEqual([z["ean"] for z in vstup], ["6290171075738", "4006381333931"])
+            self.assertEqual(hl[ce.najdi_sloupec("E", hl)], "Cena")
+            self.assertEqual(ce.najdi_sloupec("cena", hl), 4)
+            self.assertIsNone(ce.najdi_sloupec("Z", hl))
+            with mock.patch.dict(os.environ, {"SLOUPEC_NAKUP": "Cena", "NAKUP_MENA": "EUR"}):
+                p = zisk.Parametry()
+            self.assertEqual(p.najdi_sloupec(dalsi), "Cena")
+            self.assertEqual(p.nakup_eur(vstup[0]["Cena"], {"EUR": 25, "CZK": 1}), 12.5)
+
+    def test_bez_hlavicky_pismena(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f:
+            f.write("6290171075738;a;b;c;12.5\n4006381333931;a;b;c;3\n")
+        vstup, dalsi, hl = ce.nacti_vstup(f.name, "A", vrat_hlavicku=True)
+        os.unlink(f.name)
+        self.assertEqual(len(vstup), 2)
+        self.assertEqual(hl[ce.najdi_sloupec("E", hl)], "sloupec E")
+        self.assertEqual(vstup[0]["sloupec E"], "12.5")

@@ -100,8 +100,31 @@ def normalizuj_ean(v):
     return "".join(ch for ch in s if ch.isdigit())
 
 
-def nacti_vstup(cesta):
-    """Vrátí (seznam slovníků s klíčem 'ean', názvy dalších sloupců)."""
+def pismeno_na_index(spec):
+    """'A' -> 0, 'E' -> 4, 'AA' -> 26; jinak None."""
+    s = str(spec or "").strip().upper()
+    if not s.isalpha() or not s.isascii() or len(s) > 2:
+        return None
+    i = 0
+    for ch in s:
+        i = i * 26 + (ord(ch) - 64)
+    return i - 1
+
+
+def najdi_sloupec(spec, hlavicka):
+    """Index sloupce podle písmene (A, E…) nebo názvu v hlavičce; None když nenalezen."""
+    if spec is None or str(spec).strip() == "":
+        return None
+    i = pismeno_na_index(spec)          # písmeno sloupce má přednost (A, E, AB…)
+    if i is not None and i < len(hlavicka):
+        return i
+    mala = [str(h).strip().lower() for h in hlavicka]
+    return mala.index(str(spec).strip().lower()) if str(spec).strip().lower() in mala else None
+
+
+def nacti_vstup(cesta, ean_sloupec=None, vrat_hlavicku=False):
+    """Vrátí (seznam slovníků s klíčem 'ean', názvy dalších sloupců[, celá hlavička]).
+    ean_sloupec: písmeno (A) nebo název sloupce s EAN; jinak se hledá automaticky."""
     if cesta.lower().endswith(".xls"):
         sys.exit("Starý formát .xls neumím načíst – v Excelu ho prosím uložte jako .xlsx nebo .csv.")
     if cesta.lower().endswith((".xlsx", ".xlsm")):
@@ -119,17 +142,25 @@ def nacti_vstup(cesta):
             radky = list(csv.reader(f, dialekt))
     radky = [r for r in radky if any(str(c).strip() for c in r)]
     if not radky:
-        return [], []
-    hlavicka = [str(c).strip() for c in radky[0]]
-    if normalizuj_ean(hlavicka[0]) and ean_platny(normalizuj_ean(hlavicka[0])):
-        hlavicka = ["ean"] + [f"sloupec{i}" for i in range(2, len(radky[0]) + 1)]
+        return ([], [], []) if vrat_hlavicku else ([], [])
+    sirka = max(len(r) for r in radky)
+    radky = [list(r) + [""] * (sirka - len(r)) for r in radky]
+    from openpyxl.utils import get_column_letter
+    i_spec = najdi_sloupec(ean_sloupec, [str(c).strip() for c in radky[0]]) if ean_sloupec else None
+    prvni = radky[0][i_spec if i_spec is not None else 0]
+    if normalizuj_ean(prvni) and ean_platny(normalizuj_ean(prvni)):
+        hlavicka = [f"sloupec {get_column_letter(i + 1)}" for i in range(sirka)]   # soubor bez hlavičky
         data = radky
     else:
+        hlavicka = [str(c).strip() or f"sloupec {get_column_letter(i + 1)}" for i, c in enumerate(radky[0])]
         data = radky[1:]
     mala = [h.lower() for h in hlavicka]
-    # sloupec "ean", jinak první sloupec, jehož název obsahuje "ean" / "gtin" / "čárový kód", jinak první
-    i_ean = mala.index("ean") if "ean" in mala else next(
-        (i for i, h in enumerate(mala) if "ean" in h or "gtin" in h or "čárov" in h or "carov" in h), 0)
+    if i_spec is not None:
+        i_ean = i_spec
+    else:
+        # sloupec "ean", jinak první sloupec, jehož název obsahuje "ean" / "gtin" / "čárový kód", jinak první
+        i_ean = mala.index("ean") if "ean" in mala else next(
+            (i for i, h in enumerate(mala) if "ean" in h or "gtin" in h or "čárov" in h or "carov" in h), 0)
     dalsi = [h for i, h in enumerate(hlavicka) if i != i_ean]
     out, videno = [], set()
     for r in data:
@@ -142,7 +173,7 @@ def nacti_vstup(cesta):
             if i != i_ean:
                 zaznam[h] = r[i] if i < len(r) else ""
         out.append(zaznam)
-    return out, dalsi
+    return (out, dalsi, hlavicka) if vrat_hlavicku else (out, dalsi)
 
 
 # --- databáze ----------------------------------------------------------------
@@ -646,6 +677,8 @@ def main():
     ap.add_argument("--debug", action="store_true", help="ukládat surové odpovědi API do debug/")
     ap.add_argument("--jen-export", action="store_true",
                     help="nic nedotazovat, jen vytvořit Excel z už uložených výsledků běhu")
+    ap.add_argument("--ean-sloupec", help="sloupec s EAN – písmeno (A) nebo název; výchozí automaticky")
+    ap.add_argument("--nakup-sloupec", help="sloupec s nákupní cenou – písmeno (E) nebo název; přebije SLOUPEC_NAKUP")
     ap.add_argument("--bez-insight", action="store_true", help="nestahovat Kaufland Assortment Insight")
     a = ap.parse_args()
 
@@ -662,9 +695,18 @@ def main():
         tisk_jednoho(a.vstup.strip(), adaptery)
         return
 
-    vstup, dalsi = nacti_vstup(a.vstup)
+    vstup, dalsi, hlavicka = nacti_vstup(a.vstup, a.ean_sloupec, vrat_hlavicku=True)
     if not vstup:
         sys.exit("Ve vstupu nejsou žádné EAN.")
+    if a.ean_sloupec and najdi_sloupec(a.ean_sloupec, hlavicka) is None:
+        sys.exit(f"Sloupec s EAN '{a.ean_sloupec}' ve vstupu není. Sloupce: {', '.join(hlavicka)}")
+    if a.nakup_sloupec:
+        i = najdi_sloupec(a.nakup_sloupec, hlavicka)
+        if i is None:
+            sys.exit(f"Sloupec s nákupní cenou '{a.nakup_sloupec}' ve vstupu není. Sloupce: {', '.join(hlavicka)}")
+        os.environ["SLOUPEC_NAKUP"] = hlavicka[i]
+        print(f"Nákupní cena ze sloupce {a.nakup_sloupec.upper() if pismeno_na_index(a.nakup_sloupec) is not None else ''}"
+              f" „{hlavicka[i]}“")
     spatne = [z["ean"] for z in vstup if not ean_platny(z["ean"])]
     if spatne:
         print(f"! {len(spatne)} EAN má neplatnou kontrolní číslici – Kaufland je přeskočí, eBay je zkusí "
